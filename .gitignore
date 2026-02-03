@@ -42,3 +42,9 @@ pii.yaml
 
 # Sensitive data
 data/
+
+# Test dataset (downloaded on first test run)
+tests/olmocr-bench/
+
+# Test output (redacted PDFs for inspection)
+tests/output/
