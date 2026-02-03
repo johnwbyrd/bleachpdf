@@ -1,29 +1,46 @@
 # bleachpdf
 
-PII redaction tool for PDF documents. Uses OCR to find text, then matches against PEG grammar patterns defined in a YAML config file and draws black boxes over matches.
+PII redaction tool for PDF documents. Renders each page to an image, OCRs it, matches against PEG grammar patterns, draws black boxes over matches, and reassembles into a new PDF.
 
-**Works on both scanned documents and text-based PDFs.** Because it uses OCR rather than PDF text extraction, it handles scanned bank statements, faxed documents, and image-based PDFs just as well as native digital documents.
+## Why This Approach?
 
-## Why This Tool?
+**Every PDF is treated as a scanned document.** We never extract or trust the PDF's text layer. Instead, we render each page to a high-resolution image and OCR it from scratch. This means:
 
-Most PII redaction tools use NLP/ML models (spaCy, Microsoft Presidio, OpenAI) to detect entities like "any SSN" or "any phone number." That approach works for generic detection but can miss unusual formats or produce false positives. Many also only work on text-layer PDFs, failing on scanned documents.
+- Scanned documents, faxed pages, and image-based PDFs work identically to native digital PDFs
+- Text hidden behind images or in unusual encodings gets caught
+- The output is always a clean image-based PDF with no hidden text layer to leak
 
-This tool takes a different approach: **you define exact patterns using PEG grammars**. This is ideal when you know the specific values you need to redact—your own SSN, specific account numbers, known identifiers—rather than trying to detect "anything that looks like an SSN."
+Most redaction tools either rely on the PDF text layer (failing on scans) or use ML/NLP models to detect generic PII patterns (missing unusual formats, producing false positives). This tool takes a different approach: **you define exact patterns using PEG grammars**. Ideal when you know the specific values to redact—your SSN, specific account numbers, known addresses.
 
 | Approach | Best For |
 |----------|----------|
 | ML/NLP (Presidio, etc.) | Unknown documents, generic PII detection |
-| Text-layer tools | Native digital PDFs only |
-| **PEG + OCR (this tool)** | Known values, scanned docs, precise control |
+| Text-layer extraction | Native digital PDFs only |
+| **Image + OCR (this tool)** | Known values, any PDF type, precise control |
 
 ## How It Works
 
-1. **PDF to Image**: Each PDF page is rendered at configurable DPI (default 300) using PyMuPDF
-2. **OCR**: Tesseract extracts words with bounding box coordinates
-3. **Normalization**: Text is stripped of non-alphanumeric characters for matching
-4. **Pattern Matching**: PEG grammars match against the normalized text stream
-5. **Redaction**: Black rectangles are drawn over matched words
-6. **Reassembly**: Redacted images are combined back into a PDF
+```mermaid
+flowchart LR
+    A[Input PDF] --> B[Render to Image]
+    B --> C[OCR]
+    C --> D[Pattern Match]
+    D --> E[Draw Black Boxes]
+    E --> F[Output PDF]
+
+    B -.- G["(text layer ignored)"]
+    F -.- H["(image only, no text layer)"]
+```
+
+1. **Render**: Each page is rasterized at configurable DPI (default 300) using PyMuPDF. The PDF's text layer is ignored.
+2. **OCR**: Tesseract extracts words with bounding box coordinates from the rendered image.
+3. **Normalize**: Text is stripped of non-alphanumeric characters (e.g., `123-45-6789` → `123456789`).
+4. **Match**: PEG grammars match against the normalized text stream.
+5. **Redact**: Black rectangles are drawn over matched words on the image.
+6. **Reassemble**: Redacted images are combined into a new PDF.
+7. **Verify**: The output is re-scanned to confirm no patterns remain (can be disabled with `--no-verify`).
+
+The output PDF contains only images -- no searchable text layer, no hidden metadata from the original.
 
 ## Requirements
 
@@ -125,7 +142,7 @@ bleachpdf -c mypatterns.yaml document.pdf
 # Quiet mode
 bleachpdf -q document.pdf
 
-# Verbose mode (shows matched patterns)
+# Verbose mode (shows processing progress)
 bleachpdf -v document.pdf
 ```
 
@@ -138,7 +155,7 @@ bleachpdf -v document.pdf
 | `-d, --dpi` | Resolution for rendering and output (default: 300) |
 | `--no-verify` | Skip re-scanning output to verify redaction (faster but less safe) |
 | `-q, --quiet` | Suppress output |
-| `-v, --verbose` | Show matched patterns |
+| `-v, --verbose` | Show processing progress |
 | `-h, --help` | Show help |
 
 ### Output Behavior
@@ -154,7 +171,7 @@ bleachpdf -v document.pdf
 
 ### Verification
 
-By default, bleachpdf re-scans each output file after redaction to verify that no patterns are still detectable. If any matches are found, the tool exits with code 1 and reports which files failed.
+By default, bleachpdf re-scans each output file after redaction to verify that no patterns are still detectable. This runs the same OCR + pattern matching pipeline on the redacted output. If any matches are found, the tool exits with code 1 and reports which files failed.
 
 This catches edge cases where redaction boxes don't fully cover the text. Use `--no-verify` to skip this step if you need faster processing and accept the risk.
 
@@ -162,7 +179,7 @@ This catches edge cases where redaction boxes don't fully cover the text. Use `-
 
 - **pytesseract**: Python wrapper for Tesseract OCR
 - **Pillow**: Image processing
-- **PyMuPDF**: PDF reading and rendering
+- **PyMuPDF**: PDF rendering
 - **reportlab**: PDF generation
 - **PyYAML**: Config file parsing
 - **parsimonious**: PEG grammar parsing
