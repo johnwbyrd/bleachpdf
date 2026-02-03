@@ -293,16 +293,21 @@ def redact_image(img: Image.Image, grammars: list[Grammar]) -> tuple[Image.Image
 # =============================================================================
 
 
+def _max_pixels_for_doc(doc: fitz.Document, dpi: int) -> int:
+    """Calculate the maximum pixel count needed for any page in the document."""
+    max_pixels = 0
+    for page in doc:
+        rect = page.rect
+        width_px = int(rect.width * dpi / 72)
+        height_px = int(rect.height * dpi / 72)
+        max_pixels = max(max_pixels, width_px * height_px)
+    return max_pixels
+
+
 def render_page(page: fitz.Page, dpi: int) -> Image.Image:
     """Render a PDF page to a PIL Image."""
     pix = page.get_pixmap(dpi=dpi)
-    # Temporarily allow this specific image size to avoid decompression bomb warning
-    old_limit = Image.MAX_IMAGE_PIXELS
-    Image.MAX_IMAGE_PIXELS = pix.width * pix.height + 1
-    try:
-        return Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    finally:
-        Image.MAX_IMAGE_PIXELS = old_limit
+    return Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
 
 def images_to_pdf(images: list[Image.Image], output_path: str, dpi: int) -> None:
@@ -335,21 +340,29 @@ def redact_pdf(
     Returns the total number of redactions made.
     """
     doc = fitz.open(input_path)
-    images: list[Image.Image] = []
-    total_redactions = 0
 
-    for page in doc:
-        img = render_page(page, dpi)
-        redacted, count = redact_image(img, grammars)
-        images.append(redacted)
-        total_redactions += count
+    # Set pixel limit for this document to avoid decompression bomb warnings
+    old_limit = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = _max_pixels_for_doc(doc, dpi) + 1
 
-    doc.close()
+    try:
+        images: list[Image.Image] = []
+        total_redactions = 0
 
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    images_to_pdf(images, output_path, dpi)
+        for page in doc:
+            img = render_page(page, dpi)
+            redacted, count = redact_image(img, grammars)
+            images.append(redacted)
+            total_redactions += count
 
-    return total_redactions
+        doc.close()
+
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        images_to_pdf(images, output_path, dpi)
+
+        return total_redactions
+    finally:
+        Image.MAX_IMAGE_PIXELS = old_limit
 
 
 def scan_pdf(input_path: str, grammars: list[Grammar], dpi: int = 300) -> int:
@@ -359,22 +372,30 @@ def scan_pdf(input_path: str, grammars: list[Grammar], dpi: int = 300) -> int:
     Returns the number of matches found (used for verification).
     """
     doc = fitz.open(input_path)
-    total_matches = 0
 
-    for page in doc:
-        img = render_page(page, dpi)
-        words = ocr_page(img)
-        if not words:
-            continue
+    # Set pixel limit for this document to avoid decompression bomb warnings
+    old_limit = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = _max_pixels_for_doc(doc, dpi) + 1
 
-        stream = build_stream(words)
-        matched = find_matches(stream, grammars)
-        if matched:
-            groups = group_adjacent_words(matched, words)
-            total_matches += len(groups)
+    try:
+        total_matches = 0
 
-    doc.close()
-    return total_matches
+        for page in doc:
+            img = render_page(page, dpi)
+            words = ocr_page(img)
+            if not words:
+                continue
+
+            stream = build_stream(words)
+            matched = find_matches(stream, grammars)
+            if matched:
+                groups = group_adjacent_words(matched, words)
+                total_matches += len(groups)
+
+        doc.close()
+        return total_matches
+    finally:
+        Image.MAX_IMAGE_PIXELS = old_limit
 
 
 # =============================================================================
