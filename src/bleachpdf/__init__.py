@@ -212,8 +212,8 @@ def group_adjacent_words(matched_indices: set[int], words: list[Word]) -> list[l
         prev = words[prev_idx]
         curr = words[idx]
 
-        # Same line: vertical positions within 1.5x the height
-        same_line = abs(prev.top - curr.top) < prev.height * 1.5
+        # Same line: vertical positions within 0.5x the height (strict to avoid cross-line grouping)
+        same_line = abs(prev.top - curr.top) < prev.height * 0.5
 
         # Adjacent: sequential indices or horizontally close
         adjacent = idx == prev_idx + 1 or (curr.left - prev.right < 50)
