@@ -15,7 +15,7 @@ import os
 import re
 import sys
 import tempfile
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import fitz
 import pytesseract
@@ -139,7 +139,6 @@ def find_matches(stream: str, mappings: list[int], patterns: list[str]) -> set[i
             try:
                 node: Node | None = grammar.match(stream, start)
                 if node:
-                    log.debug("Matched: %s", node.text)
                     for i in range(start, start + len(node.text)):
                         if i < len(mappings):
                             matched_words.add(mappings[i])
@@ -249,13 +248,41 @@ def images_to_pdf(images: list[Image.Image], output_path: str, dpi: int = 300) -
     c.save()
 
 
+def scan_pdf(input_path: str, patterns: list[str], dpi: int = 300) -> int:
+    """Scan a PDF for pattern matches without redacting. Returns match count."""
+    doc = fitz.open(input_path)
+    total_matches = 0
+
+    for page in doc:
+        pix = page.get_pixmap(dpi=dpi)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+        words = ocr_page(img)
+        if not words:
+            continue
+
+        stream, mappings = build_text_stream(words)
+        matched = find_matches(stream, mappings, patterns)
+
+        if matched:
+            groups = group_adjacent_words(matched, words)
+            total_matches += len(groups)
+
+    doc.close()
+    return total_matches
+
+
 def redact_pdf(input_path: str, output_path: str, patterns: list[str], dpi: int = 300) -> int:
     """Redact a PDF file. Returns total redaction count."""
     doc = fitz.open(input_path)
     images: list[Image.Image] = []
     total_redactions = 0
+    num_pages = len(doc)
 
-    for page in doc:
+    log.debug("%s: processing %d page(s)", input_path, num_pages)
+
+    for page_num, page in enumerate(doc, 1):
+        log.debug("  page %d/%d", page_num, num_pages)
         pix = page.get_pixmap(dpi=dpi)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         redacted, count = redact_page(img, patterns)
@@ -327,15 +354,24 @@ def setup_logging(*, quiet: bool = False, verbose: bool = False) -> None:
     else:
         level = logging.INFO
 
-    logging.basicConfig(
-        level=level,
-        format="%(message)s",
-        stream=sys.stderr,
-    )
+    # Only configure our logger, not the root logger (avoids library noise)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    log.addHandler(handler)
+    log.setLevel(level)
+
+
+class HelpOnErrorParser(argparse.ArgumentParser):
+    """ArgumentParser that prints full help on error."""
+
+    def error(self, message: str) -> NoReturn:
+        self.print_help(sys.stderr)
+        sys.stderr.write(f"\nerror: {message}\n")
+        sys.exit(2)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
+    parser = HelpOnErrorParser(
         prog="bleachpdf",
         description="Redact PII from PDF documents using OCR and PEG pattern matching.",
         epilog="""
@@ -382,7 +418,7 @@ Config file lookup order:
         "-v",
         "--verbose",
         action="store_true",
-        help="show matched patterns",
+        help="show each pattern match found",
     )
     parser.add_argument(
         "-d",
@@ -391,6 +427,11 @@ Config file lookup order:
         default=300,
         metavar="DPI",
         help="resolution for rendering and output (default: 300)",
+    )
+    parser.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="skip re-scanning output to verify redaction (faster but less safe)",
     )
     parser.add_argument(
         "--version",
@@ -443,9 +484,26 @@ Config file lookup order:
             sys.exit(1)
 
     # Process files
+    verification_failures: list[tuple[str, int]] = []
+
     for input_path, base_dir in jobs:
         output_path = resolve_output(input_path, args.output, base_dir)
         redact_pdf(input_path, output_path, patterns, dpi=args.dpi)
+
+        if not args.no_verify:
+            leaked = scan_pdf(output_path, patterns, dpi=args.dpi)
+            if leaked > 0:
+                log.error("VERIFY FAILED: %s still has %d matches", output_path, leaked)
+                verification_failures.append((output_path, leaked))
+            else:
+                log.info("VERIFY OK: %s", output_path)
+
+    if verification_failures:
+        log.error("")
+        log.error("Verification failed for %d file(s):", len(verification_failures))
+        for path, count in verification_failures:
+            log.error("  %s (%d matches)", path, count)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -81,8 +81,12 @@ patterns:
     match = "ACCT" d d d d d d
     d = ~"[0-9]"
 
-  # Case-insensitive match using regex
-  - 'match = ~"[Jj][Oo][Hh][Nn][Dd][Oo][Ee]"'
+  # Case-insensitive match using (?i) flag
+  - 'match = ~"(?i)johndoe"'
+
+  # Address with optional suffix (case-insensitive)
+  - |
+    match = ~"(?i)123mainst(reet)?"
 
   # Partial match - last 4 digits of known number
   - 'match = "1234"'
@@ -132,6 +136,7 @@ bleachpdf -v document.pdf
 | `-o, --output` | Output file or directory (default: `output/`) |
 | `-c, --config` | Path to config file |
 | `-d, --dpi` | Resolution for rendering and output (default: 300) |
+| `--no-verify` | Skip re-scanning output to verify redaction (faster but less safe) |
 | `-q, --quiet` | Suppress output |
 | `-v, --verbose` | Show matched patterns |
 | `-h, --help` | Show help |
@@ -146,6 +151,12 @@ bleachpdf -v document.pdf
 | Multiple files | (none) | `output/` preserving structure |
 | Multiple files | `out/` | `out/` preserving structure |
 | Multiple files | `single.pdf` | **Error** |
+
+### Verification
+
+By default, bleachpdf re-scans each output file after redaction to verify that no patterns are still detectable. If any matches are found, the tool exits with code 1 and reports which files failed.
+
+This catches edge cases where redaction boxes don't fully cover the text. Use `--no-verify` to skip this step if you need faster processing and accept the risk.
 
 ## Dependencies
 

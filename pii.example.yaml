@@ -19,8 +19,12 @@ patterns:
     match = "ACCT" d d d d d d
     d = ~"[0-9]"
 
-  # Case-insensitive match using regex
-  - 'match = ~"[Jj][Oo][Hh][Nn][Dd][Oo][Ee]"'
+  # Case-insensitive match using (?i) flag
+  - 'match = ~"(?i)johndoe"'
+
+  # Address with optional suffix (case-insensitive)
+  - |
+    match = ~"(?i)123mainst(reet)?"
 
   # Partial match - last 4 digits of known number
   - 'match = "1234"'
