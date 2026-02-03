@@ -10,6 +10,7 @@ draws black boxes over matches, and reassembles into a new PDF.
 from __future__ import annotations
 
 import argparse
+import gc
 import glob
 import logging
 import math
@@ -322,7 +323,10 @@ def _max_pixels_for_doc(doc: fitz.Document, dpi: int) -> int:
 def render_page(page: fitz.Page, dpi: int) -> Image.Image:
     """Render a PDF page to a PIL Image."""
     pix = page.get_pixmap(dpi=dpi)
-    return Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    # Explicitly free the pixmap to release memory immediately
+    pix = None  # noqa: F841
+    return img
 
 
 def images_to_pdf(images: list[Image.Image], output_path: str, dpi: int) -> None:
@@ -342,6 +346,8 @@ def images_to_pdf(images: list[Image.Image], output_path: str, dpi: int) -> None
         c.drawImage(tmp_path, 0, 0, pt_w, pt_h)
         c.showPage()
         os.unlink(tmp_path)
+        # Close image to free memory immediately
+        img.close()
 
     c.save()
 
@@ -370,6 +376,9 @@ def redact_pdf(
         for page in doc:
             img = render_page(page, config.dpi)
             redacted, count = redact_image(img, grammars, config)
+            # Close original image if redaction created a copy
+            if redacted is not img:
+                img.close()
             images.append(redacted)
             total_redactions += count
 
@@ -401,6 +410,7 @@ def scan_pdf(input_path: str, grammars: list[Grammar], config: Config) -> int:
         for page in doc:
             img = render_page(page, config.dpi)
             words = ocr_page(img, config)
+            img.close()  # Free memory immediately after OCR
             if not words:
                 continue
 
@@ -460,6 +470,9 @@ def _process_single_pdf(args: tuple[str, str, list[str], Config]) -> JobResult:
         if leaked > 0:
             error_code = EXIT_VERIFICATION_FAILED
 
+    # Force garbage collection to free memory between PDFs
+    gc.collect()
+
     return JobResult(
         input_path=input_path,
         output_path=output_path,
@@ -487,6 +500,23 @@ def get_worker_count(jobs_arg: int | None, num_jobs: int) -> int:
 
     # Clamp to reasonable bounds
     return max(1, min(workers, num_jobs, cpu_count))
+
+
+def _init_worker() -> None:
+    """Initialize worker process with low priority to avoid starving other processes."""
+    # Unix/Linux/macOS: increase niceness (lower priority)
+    try:
+        os.nice(10)
+    except (AttributeError, OSError):
+        pass
+
+    # Windows: set below-normal priority class
+    try:
+        import psutil
+
+        psutil.Process().nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+    except Exception:
+        pass
 
 
 # =============================================================================
@@ -808,12 +838,15 @@ Config file lookup order:
 
     if num_workers == 1:
         # Sequential processing (no subprocess overhead)
+        _init_worker()  # Still set low priority for single-worker mode
         for job in job_args:
             result = _process_single_pdf(job)
             handle_result(result)
     else:
         # Parallel processing
-        with ProcessPoolExecutor(max_workers=num_workers) as pool:
+        with ProcessPoolExecutor(
+            max_workers=num_workers, initializer=_init_worker
+        ) as pool:
             for result in pool.map(_process_single_pdf, job_args):
                 handle_result(result)
 
