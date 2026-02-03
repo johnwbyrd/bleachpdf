@@ -47,21 +47,25 @@ DEFAULT_TYPES = ["present", "order", "table"]
 
 
 # =============================================================================
-# Test Result Tracking
+# Test Result Tracking (xdist-compatible)
 # =============================================================================
 
 
 class TestResultTracker:
-    """Track test results with redaction details."""
+    """
+    Track test results with redaction details.
+
+    Works with pytest-xdist by aggregating from test reports in the controller.
+    """
 
     def __init__(self):
         self.passed = 0
         self.failed = 0
         self.threshold = 0.0
         # Detailed redaction tracking
-        self.with_redactions = 0  # Tests that actually redacted something
-        self.zero_redactions = 0  # Tests with 0 redactions (suspicious)
-        self.zero_redaction_tests: list[str] = []  # Test IDs for investigation
+        self.with_redactions = 0
+        self.zero_redactions = 0
+        self.zero_redaction_tests: list[str] = []
 
     @property
     def total(self) -> int:
@@ -73,7 +77,8 @@ class TestResultTracker:
             return 0.0
         return (self.passed / self.total) * 100
 
-# Global tracker instance
+
+# Global tracker instance (populated by pytest_runtest_logreport)
 _result_tracker = TestResultTracker()
 
 
@@ -226,6 +231,25 @@ def load_test_cases(
 # =============================================================================
 
 
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
+    """
+    Return number of workers for pytest-xdist when -n auto is used.
+
+    Default: half the CPU cores.
+    Override with --jobs N.
+    """
+    import os
+
+    # Check if user specified --jobs
+    jobs = config.getoption("--jobs", default=None)
+    if jobs is not None:
+        return jobs
+
+    # Default: half the CPU cores, minimum 1
+    cpu_count = os.cpu_count() or 1
+    return max(1, cpu_count // 2)
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     """Add custom command-line options."""
     parser.addoption(
@@ -284,12 +308,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store",
         type=int,
         default=None,
-        help="Number of parallel workers (default: half the CPU count)",
+        help="Number of parallel workers (default: half the CPU cores)",
     )
 
 
 def pytest_configure(config: pytest.Config) -> None:
     """Run setup checks before tests."""
+    # Only run on controller (not workers)
+    if hasattr(config, "workerinput"):
+        return
+
     check_tesseract()
     ensure_dataset()
 
@@ -297,9 +325,56 @@ def pytest_configure(config: pytest.Config) -> None:
     _result_tracker.threshold = config.getoption("--pass-threshold")
 
 
-def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ARG001
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """
+    Aggregate test results from reports.
+
+    This hook is called in the controller process for each test report,
+    including those received from xdist workers.
+    """
+    # Only process the "call" phase (actual test execution), not setup/teardown
+    if report.when != "call":
+        return
+
+    # Only process redaction tests
+    if "test_redaction" not in report.nodeid:
+        return
+
+    # Extract user_properties set by the test
+    props = dict(report.user_properties)
+    redactions = props.get("redactions")
+    leaked = props.get("leaked")
+    test_id = props.get("test_id", report.nodeid)
+
+    # If properties weren't set (test errored before setting them), skip
+    if redactions is None:
+        return
+
+    # Track pass/fail based on verification (leaked == 0 means pass)
+    if report.passed:
+        _result_tracker.passed += 1
+    else:
+        _result_tracker.failed += 1
+
+    # Track redaction counts
+    if redactions > 0:
+        _result_tracker.with_redactions += 1
+    else:
+        _result_tracker.zero_redactions += 1
+        _result_tracker.zero_redaction_tests.append(test_id)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:  # noqa: ARG001
     """Print summary and enforce pass threshold."""
+    # Only run on controller (not workers)
+    if hasattr(session.config, "workerinput"):
+        return
+
     tracker = _result_tracker
+
+    # Skip summary if no tests ran
+    if tracker.total == 0:
+        return
 
     # Print summary
     print("\n" + "=" * 70)
@@ -347,3 +422,44 @@ def escape_peg_regex(s: str) -> str:
         else:
             result.append(c)
     return "".join(result)
+
+
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    """Generate test cases dynamically for parametrized redaction tests."""
+    if "redaction_case" not in metafunc.fixturenames:
+        return
+
+    # Get filter options from pytest config
+    config = metafunc.config
+    pdf_filter = config.getoption("--pdf")
+    category_opt = config.getoption("--category")
+    types_opt = config.getoption("--types")
+    sample = config.getoption("--sample")
+    limit = config.getoption("--limit")
+
+    categories = None
+    if category_opt:
+        categories = [c.strip() for c in category_opt.split(",")]
+
+    types = None
+    if types_opt:
+        types = [t.strip() for t in types_opt.split(",")]
+
+    # Load test cases
+    cases = load_test_cases(
+        categories=categories,
+        types=types,
+        pdf_filter=pdf_filter,
+        limit=limit,
+        sample=sample,
+    )
+
+    if not cases:
+        # No cases match - parametrize with empty list (test will be skipped)
+        metafunc.parametrize("redaction_case", [], ids=[])
+        return
+
+    # Create readable test IDs from the test_id field
+    ids = [case[2] for case in cases]  # case[2] is test_id
+
+    metafunc.parametrize("redaction_case", cases, ids=ids)

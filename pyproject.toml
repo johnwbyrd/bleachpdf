@@ -46,6 +46,7 @@ Issues = "https://github.com/johnwbyrd/bleachpdf/issues"
 dev = [
     "ruff>=0.8.0",
     "pytest>=7.0.0",
+    "pytest-xdist>=3.0.0",
     "huggingface_hub>=0.20.0",
 ]
 
@@ -54,6 +55,9 @@ bleachpdf = "bleachpdf:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/bleachpdf"]
+
+[tool.pytest.ini_options]
+addopts = "-n auto"
 
 [tool.ruff]
 line-length = 100
