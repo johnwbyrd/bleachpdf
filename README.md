@@ -40,6 +40,8 @@ This tool takes a different approach: it converts each page to an image, uses op
 
 **Free and private.** No subscriptions, no accounts, no uploading your documents anywhere. Everything runs on your own computer.
 
+**Actually tested.** Most free redaction tools ship with minimal or no automated testing. bleachpdf runs against [olmOCR-bench](https://huggingface.co/datasets/allenai/olmOCR-bench), a standardized benchmark from the Allen Institute for AI containing thousands of challenging documents -- old scans, dense text, complex layouts, and more. Every test verifies that redacted text is actually hidden by re-scanning the output. See [Testing Strategy](docs/testing.md) for details.
+
 ## How It Works
 
 1. Each page gets converted to an image
@@ -247,6 +249,8 @@ This software is designed to protect personal privacy. It is not designed to sil
 
 ### Running Tests
 
+Each test redacts a document, then re-scans the output to verify the text is actually hidden.
+
 ```bash
 pip install -e ".[dev]"
 pytest tests/
@@ -259,3 +263,5 @@ pytest tests/ --jobs=4        # Use 4 workers
 pytest tests/ -n 1            # Run serially (disable parallelism)
 pytest tests/ --limit=10      # Only run first 10 test cases
 ```
+
+For the full testing documentation—including filtering by category, setting pass thresholds, and CI configuration—see [Testing Strategy](docs/testing.md).
