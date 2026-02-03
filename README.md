@@ -29,7 +29,6 @@ flowchart LR
     E --> F[Output PDF]
 
     B -.- G["(text layer ignored)"]
-    F -.- H["(image only, no text layer)"]
 ```
 
 1. **Render**: Each page is rasterized at configurable DPI (default 300) using PyMuPDF. The PDF's text layer is ignored.
