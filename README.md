@@ -1,232 +1,235 @@
 # bleachpdf
 
-A tool that blacks out sensitive information in PDF files.
+Redact sensitive information from PDFs using OCR. Works on scanned documents.
 
-## What Does This Do?
+## Quick Start
 
-You have a PDF with your Social Security number, bank account numbers, or home address. You need to share it, but you want that private stuff hidden first. This tool finds the sensitive text and covers it with black boxes.
-
-## Why Use This Instead of Adobe Acrobat?
-
-**It's free and open source.** You can read every line of code. No subscription, no account, no uploading your sensitive documents to someone else's server. Everything runs on your computer and stays there.
-
-**It works on scanned documents.** Most redaction tools read the text embedded inside a PDF file. That works fine for PDFs created digitally, but fails completely on scanned documents, faxes, or PDFs that are really just pictures of pages.
-
-This tool takes a different approach: it treats every PDF like a scanned document. It converts each page to an image, reads the text using optical character recognition (OCR), finds your sensitive information, draws black boxes over it, and saves a new PDF. The original text layer is ignored entirely, so nothing slips through.
-
-The output is a clean PDF containing only images. There's no hidden text layer that could accidentally leak your information.
-
-## How It Works
-
-1. Each page becomes an image
-2. OCR reads the words and their positions
-3. Your patterns are matched against the text
-4. Black boxes cover the matches
-5. A new PDF is created from the redacted images
-6. The output is scanned again to make sure nothing was missed
-
-## Requirements
-
-- Python 3.9 or newer
-- Tesseract, the OCR engine (this does the actual text recognition)
-
-## Installation
-
-First, install Tesseract on your system:
+**1. Install Tesseract** (the OCR engine):
 
 ```bash
-# On Ubuntu or Debian
+# Ubuntu/Debian
 sudo apt install tesseract-ocr
 
-# On macOS
+# macOS
 brew install tesseract
 ```
 
-Then install bleachpdf:
+**2. Install bleachpdf:**
 
 ```bash
 pip install bleachpdf
 ```
 
-## Setting Up Your Patterns
-
-You need to tell the tool what to look for. Create a file called `pii.yaml` in the folder where you'll run the command. There's an example file to get you started:
-
-```bash
-cp pii.example.yaml pii.yaml
-```
-
-Then edit `pii.yaml` to add your own sensitive values.
-
-### Writing Patterns
-
-The simplest pattern is just the exact text you want to redact:
+**3. Create a config file** called `pii.yaml`:
 
 ```yaml
 patterns:
-  # Your Social Security number (without dashes)
-  - 'match = "123456789"'
-
-  # Your name
-  - 'match = ~"(?i)johndoe"'
-
-  # Last 4 digits of an account
-  - 'match = "1234"'
+  - 'match = "123456789"'     # SSN (without dashes)
+  - 'match = "JohnDoe"'       # Name (without spaces)
 ```
 
-The `(?i)` makes a pattern case-insensitive, so it matches "JohnDoe", "johndoe", "JOHNDOE", etc.
-
-### About Spaces and Punctuation
-
-Before matching, the tool removes all spaces, dashes, and punctuation from the text. So if your document shows `123-45-6789`, the tool sees `123456789`. If it shows `John Doe`, the tool sees `JohnDoe`.
-
-Write your patterns without spaces or punctuation:
-
-| Document shows | Pattern should be |
-|----------------|-------------------|
-| `123-45-6789` | `"123456789"` |
-| `John Doe` | `~"(?i)johndoe"` |
-| `ACCT #12345` | `"ACCT12345"` |
-
-### Advanced Patterns
-
-For more complex matching, the tool uses a pattern language called PEG (Parsing Expression Grammar). Here's an example that matches any 9-digit number:
-
-```yaml
-patterns:
-  - |
-    match = d d d d d d d d d
-    d = ~"[0-9]"
-```
-
-This says "match nine digits in a row" where `d` means any digit 0-9.
-
-### Where the Config File Can Live
-
-The tool looks for your config file in several places, in this order:
-
-1. The path you specify with `-c` or `--config`
-2. The `BLEACHPDF_CONFIG` environment variable
-3. `pii.yaml` in the current folder
-4. `~/.config/bleachpdf/pii.yaml` (your personal config)
-5. `/etc/xdg/bleachpdf/pii.yaml` (system-wide config)
-
-## Usage
-
-The basic command is:
+**4. Run it:**
 
 ```bash
 bleachpdf document.pdf
 ```
 
-This creates a redacted version in the `output/` folder.
+Output goes to `output/document.pdf` with black boxes over any matches.
 
-### More Examples
+## Why This Tool?
+
+**Works on scanned documents.** Most redaction tools read the text layer embedded in a PDF. That fails on scans, faxes, and image-based PDFs. This tool converts each page to an image, runs OCR, and redacts based on what it *sees* — not what's in the hidden text layer.
+
+**No hidden text leaks.** The output is a clean image-only PDF. There's no hidden text layer that could accidentally expose your sensitive data.
+
+**Free and local.** No subscriptions, no uploads. Everything runs on your machine.
+
+## How It Works
+
+1. Convert each PDF page to an image
+2. Run OCR to find words and their positions
+3. Match your patterns against the text
+4. Draw black boxes over matches
+5. Reassemble into a new PDF
+6. Re-scan the output to verify nothing leaked
+
+## Writing Patterns
+
+Patterns use PEG (Parsing Expression Grammar) — a way to describe text patterns by composing simple rules. Patterns go in a YAML config file; the tool looks for `pii.yaml` by default.
+
+### Literal Text
+
+The simplest pattern matches exact text:
+
+```yaml
+patterns:
+  - 'match = "123456789"'
+  - 'match = "JohnDoe"'
+```
+
+For case-insensitive matching, use `~"..."i`:
+
+```yaml
+patterns:
+  - 'match = ~"johndoe"i'    # matches JohnDoe, JOHNDOE, johndoe, etc.
+```
+
+**Note:** The tool normalizes text before matching — it strips spaces, dashes, and punctuation. Write patterns the same way:
+
+| Document shows | Write as |
+|----------------|----------|
+| `123-45-6789` | `"123456789"` |
+| `John Doe` | `~"johndoe"i` |
+| `ACCT #12345` | `"ACCT12345"` |
+
+### Building Blocks
+
+Define reusable rules to match categories of characters:
+
+```yaml
+patterns:
+  - |
+    match = digit digit digit digit
+    digit = "0" / "1" / "2" / "3" / "4" / "5" / "6" / "7" / "8" / "9"
+```
+
+This matches any 4-digit number. The `/` means "or" — a digit is 0 or 1 or 2... etc.
+
+### Sequences
+
+Rules separated by spaces match in order:
+
+```yaml
+patterns:
+  - |
+    match = "ACCT" digit digit digit digit
+    digit = "0" / "1" / "2" / "3" / "4" / "5" / "6" / "7" / "8" / "9"
+```
+
+This matches "ACCT" followed by exactly 4 digits: `ACCT1234`, `ACCT0001`, etc.
+
+### Repetition
+
+Use `+` for "one or more" and `*` for "zero or more":
+
+```yaml
+patterns:
+  - |
+    match = letter+
+    letter = "A"/"B"/"C"/"D"/"E"/"F"/"G"/"H"/"I"/"J"/"K"/"L"/"M"/"N"/"O"/"P"/"Q"/"R"/"S"/"T"/"U"/"V"/"W"/"X"/"Y"/"Z"
+```
+
+This matches any sequence of uppercase letters.
+
+### Practical Examples
+
+**Social Security Number** (9 digits):
+
+```yaml
+patterns:
+  - |
+    match = d d d d d d d d d
+    d = "0"/"1"/"2"/"3"/"4"/"5"/"6"/"7"/"8"/"9"
+```
+
+**Phone Number** (10 digits):
+
+```yaml
+patterns:
+  - |
+    match = d d d d d d d d d d
+    d = "0"/"1"/"2"/"3"/"4"/"5"/"6"/"7"/"8"/"9"
+```
+
+**Account Number** (ACCT followed by digits):
+
+```yaml
+patterns:
+  - |
+    match = "ACCT" d+
+    d = "0"/"1"/"2"/"3"/"4"/"5"/"6"/"7"/"8"/"9"
+```
+
+**Name** (case-insensitive):
+
+```yaml
+patterns:
+  - 'match = ~"johndoe"i'
+  - 'match = ~"janedoe"i'
+```
+
+### Learning More
+
+Patterns use [parsimonious](https://github.com/erikrose/parsimonious), a Python PEG parser. The README there covers the full grammar syntax including:
+
+- Grouping with parentheses
+- Optional elements with `?`
+- Lookahead with `&` and `!`
+- Comments in grammars
+
+### Config File Locations
+
+The tool searches in order:
+
+1. `-c`/`--config` argument
+2. `$BLEACHPDF_CONFIG` environment variable
+3. `./pii.yaml`
+4. `~/.config/bleachpdf/pii.yaml`
+5. `/etc/xdg/bleachpdf/pii.yaml`
+
+## Usage
 
 ```bash
-# Save to a specific file
-bleachpdf document.pdf -o redacted.pdf
-
-# Save to a specific folder
-bleachpdf document.pdf -o redacted/
-
-# Process a whole folder of PDFs
-bleachpdf documents/ -o redacted/
-
-# Process multiple files matching a pattern
-bleachpdf "reports/*.pdf" -o redacted/
-
-# Use a specific config file
-bleachpdf document.pdf -c my-patterns.yaml
-
-# See what's happening
-bleachpdf document.pdf -v
+bleachpdf document.pdf                    # Basic usage
+bleachpdf document.pdf -o redacted.pdf    # Specify output file
+bleachpdf documents/ -o output/           # Process a folder
+bleachpdf "reports/*.pdf" -o output/      # Glob pattern
+bleachpdf document.pdf -v                 # Verbose output
 ```
 
 ### Options
 
-| Option | What it does |
-|--------|--------------|
-| `-o, --output` | Where to save the result (default: `output/`) |
-| `-c, --config` | Use a specific config file |
-| `-j, --jobs N` | Process multiple files at once (default: half your CPU cores) |
-| `-d, --dpi` | Image quality, higher is sharper but slower (default: 300) |
-| `--relaxed` | Don't fail when no matches are found (see below) |
-| `--no-verify` | Skip the safety check that re-scans the output |
-| `-q, --quiet` | Don't print anything |
-| `-v, --verbose` | Print more details |
-| `-h, --help` | Show help |
-
-### The Safety Check
-
-After redacting, the tool scans the output file again to make sure nothing was missed. If it still finds matches, something went wrong and it will warn you.
-
-This takes extra time. If you're confident in your patterns and want faster processing, you can skip it with `--no-verify`.
+| Option | Description |
+|--------|-------------|
+| `-o, --output` | Output file or directory (default: `output/`) |
+| `-c, --config` | Config file path |
+| `-d, --dpi` | Image resolution (default: 300) |
+| `-j, --jobs` | Parallel workers (default: half your CPU cores) |
+| `--relaxed` | Don't fail on zero matches |
+| `--no-verify` | Skip verification scan |
+| `-v, --verbose` | Show progress |
+| `-q, --quiet` | Suppress output |
 
 ### Exit Codes
 
-The tool returns different exit codes to help you automate redaction workflows:
-
 | Code | Meaning |
 |------|---------|
-| 0 | Success — redactions were made and verified |
-| 1 | Configuration error — missing config, invalid patterns, etc. |
-| 2 | File error — input not found, can't write output, etc. |
-| 3 | No matches — the pattern didn't match anything in the document |
-| 4 | Verification failed — text is still visible after redaction |
+| 0 | Success |
+| 1 | Config error |
+| 2 | File error |
+| 3 | No matches found |
+| 4 | Verification failed (text still visible) |
 
 ### Strict vs Relaxed Mode
 
-By default, the tool runs in **strict mode**: if your pattern doesn't match anything in a document, that's treated as an error (exit code 3). This catches problems like:
+By default, the tool fails (exit 3) if no matches are found. This catches mistakes: wrong document, bad pattern, OCR failure.
 
-- Wrong document — you're redacting a file that doesn't contain the sensitive text
-- OCR failure — the text recognition couldn't read the document
-- Bad pattern — your pattern has a typo or doesn't match the actual format
-
-Use strict mode when you *expect* the document to contain the text. A missing match means something went wrong.
-
-If you're processing many documents and some legitimately won't contain the target text, use `--relaxed`:
+Use `--relaxed` when processing batches where some documents legitimately won't have matches:
 
 ```bash
 bleachpdf documents/ --relaxed
 ```
 
-In relaxed mode, documents with no matches produce a warning instead of an error. The tool still fails (exit code 4) if verification detects leaked text — that's always a hard error that can't be disabled.
+Verification failures (exit 4) are always fatal — if text leaks through redaction, that's a hard error.
 
-### Processing Multiple Files
+## Limitations
 
-When you have many files to redact, the tool processes them in parallel to save time. By default it uses half of your CPU cores. You can change this:
+**OCR isn't perfect.** Handwriting, unusual fonts, low-resolution scans, and dense text can cause recognition errors. The tool retries at higher DPI if the first pass finds nothing, but some documents may still fail.
 
-```bash
-# Use 4 parallel workers
-bleachpdf documents/ -j 4
+**Always verify manually.** No automated redaction is 100% reliable. Check every output before sharing:
 
-# Process one file at a time (slower but uses less memory)
-bleachpdf documents/ -j 1
-```
+- Is all sensitive information covered?
+- Did anything slip through?
+- Was anything over-redacted?
 
-## What's Under the Hood
-
-These Python libraries do the heavy lifting (installed automatically):
-
-- **pytesseract** — talks to Tesseract for text recognition
-- **Pillow** — handles image manipulation
-- **PyMuPDF** — converts PDF pages to images
-- **reportlab** — creates the output PDF
-- **PyYAML** — reads the config file
-- **parsimonious** — matches patterns against text
-- **platformdirs** — finds the right config folder on your system
-
-## Important: Always Verify Your Results
-
-No automated redaction system is perfect.  By Rice's theorem, none ever can be.
-
-This tool does a reasonable job with vector PDFs and high-quality scans of printed material. It does less well with handwriting and poor-quality scans. OCR makes mistakes. Patterns can miss edge cases. Unusual fonts or layouts can confuse the text recognition.
-
-**You should manually check every redacted document before sharing it.** Open the output file, look at each page, and verify that:
-
-- All sensitive information is actually covered
-- No extra text was accidentally redacted
-- Nothing slipped through
-
-Never trust this tool -- or *ANY* automated redaction tool -- to do a perfect job for you. Treat it as a helpful first pass, not a replacement for human review.
+Treat this tool as a first pass, not a replacement for human review.
