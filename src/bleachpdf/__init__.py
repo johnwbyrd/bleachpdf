@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import glob
 import logging
+import math
 import os
 import re
 import sys
@@ -311,8 +312,9 @@ def _max_pixels_for_doc(doc: fitz.Document, dpi: int) -> int:
     max_pixels = 0
     for page in doc:
         rect = page.rect
-        width_px = int(rect.width * dpi / 72)
-        height_px = int(rect.height * dpi / 72)
+        # Use ceil to account for PyMuPDF rounding, +1 for safety margin
+        width_px = math.ceil(rect.width * dpi / 72) + 1
+        height_px = math.ceil(rect.height * dpi / 72) + 1
         max_pixels = max(max_pixels, width_px * height_px)
     return max_pixels
 
