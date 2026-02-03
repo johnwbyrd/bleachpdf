@@ -6,6 +6,8 @@ Uses OCR to find text, then matches against PEG grammar patterns
 defined in a YAML config file and draws black boxes over matches.
 """
 
+from __future__ import annotations
+
 import argparse
 import glob
 import logging
@@ -13,6 +15,7 @@ import os
 import re
 import sys
 import tempfile
+from typing import TYPE_CHECKING
 
 import fitz
 import pytesseract
@@ -22,16 +25,26 @@ from PIL import Image, ImageDraw
 from platformdirs import site_config_dir, user_config_dir
 from reportlab.pdfgen import canvas
 
+if TYPE_CHECKING:
+    from parsimonious.nodes import Node
+
+__version__ = "0.1.0"
+
 APP_NAME = "bleachpdf"
 CONFIG_FILENAME = "pii.yaml"
 
 log = logging.getLogger(APP_NAME)
 
 
+# --- Types ---
+
+WordInfo = dict[str, str | int]
+
+
 # --- Config ---
 
 
-def find_config(cli_path=None):
+def find_config(cli_path: str | None = None) -> str | None:
     """
     Find config file in order of precedence:
     1. CLI argument
@@ -40,7 +53,7 @@ def find_config(cli_path=None):
     4. ~/.config/bleachpdf/pii.yaml (user config)
     5. /etc/xdg/bleachpdf/pii.yaml (site config)
     """
-    candidates = []
+    candidates: list[str] = []
 
     if cli_path:
         candidates.append(cli_path)
@@ -60,7 +73,7 @@ def find_config(cli_path=None):
     return None
 
 
-def load_config(path):
+def load_config(path: str) -> list[str]:
     """Load patterns from YAML config file."""
     with open(path) as f:
         config = yaml.safe_load(f)
@@ -70,10 +83,10 @@ def load_config(path):
 # --- OCR ---
 
 
-def ocr_page(img):
+def ocr_page(img: Image.Image) -> list[WordInfo]:
     """OCR image, return list of {text, left, top, width, height}."""
     data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-    words = []
+    words: list[WordInfo] = []
     for i in range(len(data["text"])):
         text = data["text"][i].strip()
         if text:
@@ -90,29 +103,29 @@ def ocr_page(img):
 # --- Pattern Matching ---
 
 
-def normalize(text):
+def normalize(text: str) -> str:
     """Strip everything except alphanumeric."""
     return re.sub(r"[^A-Za-z0-9]", "", text)
 
 
-def build_text_stream(words):
+def build_text_stream(words: list[WordInfo]) -> tuple[str, list[int]]:
     """
     Concatenate normalized words into a stream.
     Returns (stream, mappings) where mappings[char_index] = word_index.
     """
     stream = ""
-    mappings = []
+    mappings: list[int] = []
     for i, w in enumerate(words):
-        norm = normalize(w["text"])
+        norm = normalize(str(w["text"]))
         for _ in norm:
             mappings.append(i)
         stream += norm
     return stream, mappings
 
 
-def find_matches(stream, mappings, patterns):
+def find_matches(stream: str, mappings: list[int], patterns: list[str]) -> set[int]:
     """Find all pattern matches, return set of word indices."""
-    matched_words = set()
+    matched_words: set[int] = set()
     for pattern in patterns:
         try:
             grammar = Grammar(pattern)
@@ -122,13 +135,13 @@ def find_matches(stream, mappings, patterns):
 
         for start in range(len(stream)):
             try:
-                node = grammar.match(stream, start)
+                node: Node | None = grammar.match(stream, start)
                 if node:
                     log.debug("Matched: %s", node.text)
                     for i in range(start, start + len(node.text)):
                         if i < len(mappings):
                             matched_words.add(mappings[i])
-            except:
+            except Exception:
                 pass
     return matched_words
 
@@ -136,23 +149,29 @@ def find_matches(stream, mappings, patterns):
 # --- Redaction ---
 
 
-def group_adjacent_words(matched_indices, words):
+def group_adjacent_words(matched_indices: set[int], words: list[WordInfo]) -> list[list[int]]:
     """Group matched word indices that are on the same line and adjacent."""
     if not matched_indices:
         return []
 
     sorted_indices = sorted(matched_indices)
-    groups = []
+    groups: list[list[int]] = []
     current_group = [sorted_indices[0]]
 
     for idx in sorted_indices[1:]:
         prev_idx = current_group[-1]
         prev_w = words[prev_idx]
         curr_w = words[idx]
-        same_line = abs(prev_w["top"] - curr_w["top"]) < prev_w["height"] * 1.5
-        close = idx == prev_idx + 1 or (
-            curr_w["left"] - (prev_w["left"] + prev_w["width"]) < 50
-        )
+        prev_top = int(prev_w["top"])
+        curr_top = int(curr_w["top"])
+        prev_height = int(prev_w["height"])
+        prev_left = int(prev_w["left"])
+        prev_width = int(prev_w["width"])
+        curr_left = int(curr_w["left"])
+
+        same_line = abs(prev_top - curr_top) < prev_height * 1.5
+        close = idx == prev_idx + 1 or (curr_left - (prev_left + prev_width) < 50)
+
         if same_line and close:
             current_group.append(idx)
         else:
@@ -163,15 +182,17 @@ def group_adjacent_words(matched_indices, words):
     return groups
 
 
-def words_to_box(words, indices, img_w, img_h, pad=4):
+def words_to_box(
+    words: list[WordInfo], indices: list[int], img_w: int, img_h: int, pad: int = 4
+) -> tuple[int, int, int, int] | None:
     """Compute bounding box for a set of word indices."""
     ws = [words[i] for i in indices]
     if not ws:
         return None
-    left = min(w["left"] for w in ws) - pad
-    top = min(w["top"] for w in ws) - pad
-    right = max(w["left"] + w["width"] for w in ws) + pad
-    bottom = max(w["top"] + w["height"] for w in ws) + pad
+    left = min(int(w["left"]) for w in ws) - pad
+    top = min(int(w["top"]) for w in ws) - pad
+    right = max(int(w["left"]) + int(w["width"]) for w in ws) + pad
+    bottom = max(int(w["top"]) + int(w["height"]) for w in ws) + pad
     return (
         max(0, left),
         max(0, top),
@@ -180,7 +201,7 @@ def words_to_box(words, indices, img_w, img_h, pad=4):
     )
 
 
-def redact_page(img, patterns):
+def redact_page(img: Image.Image, patterns: list[str]) -> tuple[Image.Image, int]:
     """Redact a single page image. Returns (redacted_image, num_redactions)."""
     img = img.copy()
     w, h = img.size
@@ -201,7 +222,7 @@ def redact_page(img, patterns):
     for group in groups:
         box = words_to_box(words, group, w, h)
         if box:
-            draw.rectangle([int(c) for c in box], fill="black")
+            draw.rectangle(box, fill="black")
 
     return img, len(groups)
 
@@ -209,7 +230,7 @@ def redact_page(img, patterns):
 # --- PDF I/O ---
 
 
-def images_to_pdf(images, output_path, dpi=300):
+def images_to_pdf(images: list[Image.Image], output_path: str, dpi: int = 300) -> None:
     """Convert images to PDF at specified DPI."""
     c = canvas.Canvas(output_path)
     for img in images:
@@ -226,10 +247,10 @@ def images_to_pdf(images, output_path, dpi=300):
     c.save()
 
 
-def redact_pdf(input_path, output_path, patterns):
+def redact_pdf(input_path: str, output_path: str, patterns: list[str]) -> int:
     """Redact a PDF file. Returns total redaction count."""
     doc = fitz.open(input_path)
-    images = []
+    images: list[Image.Image] = []
     total_redactions = 0
 
     for page in doc:
@@ -252,7 +273,7 @@ def redact_pdf(input_path, output_path, patterns):
 # --- CLI ---
 
 
-def resolve_output(input_path, output_arg, base_dir=None):
+def resolve_output(input_path: str, output_arg: str | None, base_dir: str | None = None) -> str:
     """
     Determine output path for a given input.
 
@@ -274,12 +295,12 @@ def resolve_output(input_path, output_arg, base_dir=None):
         return output_arg
 
 
-def collect_inputs(args):
+def collect_inputs(args: list[str]) -> list[tuple[str, str | None]]:
     """
     Collect PDF files from input arguments.
     Returns list of (input_path, base_dir) tuples.
     """
-    jobs = []
+    jobs: list[tuple[str, str | None]] = []
     for arg in args:
         if "*" in arg or "?" in arg:
             for p in glob.glob(arg, recursive=True):
@@ -295,7 +316,7 @@ def collect_inputs(args):
     return jobs
 
 
-def setup_logging(quiet=False, verbose=False):
+def setup_logging(*, quiet: bool = False, verbose: bool = False) -> None:
     """Configure logging based on CLI flags."""
     if quiet:
         level = logging.WARNING
@@ -311,7 +332,7 @@ def setup_logging(quiet=False, verbose=False):
     )
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         prog="bleachpdf",
         description="Redact PII from PDF documents using OCR and PEG pattern matching.",
@@ -356,6 +377,11 @@ Config file lookup order:
         "-v", "--verbose",
         action="store_true",
         help="show matched patterns",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
 
     args = parser.parse_args()

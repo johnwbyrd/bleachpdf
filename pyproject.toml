@@ -6,7 +6,27 @@ build-backend = "hatchling.build"
 name = "bleachpdf"
 version = "0.1.0"
 description = "PII redaction tool for PDF documents using OCR and PEG pattern matching"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
 requires-python = ">=3.9"
+authors = [
+    { name = "John W. Byrd" },
+]
+keywords = ["pdf", "redaction", "pii", "ocr", "privacy", "tesseract"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Utilities",
+]
 dependencies = [
     "pytesseract>=0.3.10",
     "Pillow>=10.0.0",
@@ -17,10 +37,10 @@ dependencies = [
     "platformdirs>=4.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/johnwbyrd/bleachpdf"
+Repository = "https://github.com/johnwbyrd/bleachpdf"
+Issues = "https://github.com/johnwbyrd/bleachpdf/issues"
+
 [project.scripts]
 bleachpdf = "bleachpdf:main"
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-]
