@@ -233,4 +233,4 @@ Note that verification failures (text still visible after redaction) are always 
 - Did anything slip through?
 - Was anything accidentally over-redacted?
 
-Think of this tool as a helpful first pass, not a replacement for careful human review.
+Think of this tool as a helpful first pass, not a replacement for careful human review.  Also, note carefully the relevant details in the accompanying LICENSE file.
