@@ -35,6 +35,13 @@ __version__ = "0.1.0"
 APP_NAME = "bleachpdf"
 CONFIG_FILENAME = "pii.yaml"
 
+# Exit codes
+EXIT_SUCCESS = 0
+EXIT_CONFIG_ERROR = 1
+EXIT_FILE_ERROR = 2
+EXIT_NO_MATCHES = 3
+EXIT_VERIFICATION_FAILED = 4
+
 log = logging.getLogger(APP_NAME)
 
 
@@ -91,6 +98,8 @@ class JobResult:
     output_path: str
     redactions: int
     leaked: int  # 0 if verification passed or was skipped
+    error_code: int = EXIT_SUCCESS
+    retried_dpi: int | None = None  # DPI used on retry, or None if no retry
 
 
 # =============================================================================
@@ -372,23 +381,42 @@ def _process_single_pdf(args: tuple[str, str, list[str], int, bool]) -> JobResul
 
     Takes a tuple of (input_path, output_path, patterns, dpi, verify).
     Compiles grammars in this process since Grammar objects can't be pickled.
+
+    If no matches are found at the initial DPI, retries at 2x DPI.
     """
     input_path, output_path, patterns, dpi, verify = args
 
     # Compile grammars in this worker process
     grammars = compile_grammars(patterns)
 
+    # First attempt at base DPI
     redactions = redact_pdf(input_path, output_path, grammars, dpi)
+    retried_dpi = None
 
+    # Retry at higher DPI if no matches found
+    if redactions == 0:
+        retried_dpi = dpi * 2
+        redactions = redact_pdf(input_path, output_path, grammars, retried_dpi)
+
+    # Determine error code
+    error_code = EXIT_SUCCESS
     leaked = 0
-    if verify:
-        leaked = scan_pdf(output_path, grammars, dpi)
+
+    if redactions == 0:
+        error_code = EXIT_NO_MATCHES
+    elif verify:
+        final_dpi = retried_dpi if retried_dpi else dpi
+        leaked = scan_pdf(output_path, grammars, final_dpi)
+        if leaked > 0:
+            error_code = EXIT_VERIFICATION_FAILED
 
     return JobResult(
         input_path=input_path,
         output_path=output_path,
         redactions=redactions,
         leaked=leaked,
+        error_code=error_code,
+        retried_dpi=retried_dpi,
     )
 
 
@@ -598,6 +626,11 @@ Config file lookup order:
         help="skip re-scanning output to verify redaction (faster but less safe)",
     )
     parser.add_argument(
+        "--relaxed",
+        action="store_true",
+        help="don't fail if no matches found (default: strict mode fails with exit code 3)",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -669,34 +702,60 @@ Config file lookup order:
 
     # Process files
     verification_failures: list[tuple[str, int]] = []
+    no_match_failures: list[str] = []
+
+    def handle_result(result: JobResult) -> None:
+        """Process a single result, logging and tracking failures."""
+        # Log redaction info
+        if result.retried_dpi:
+            log.info(
+                "%s -> %s (%d redactions, retried at %d DPI)",
+                result.input_path, result.output_path, result.redactions, result.retried_dpi,
+            )
+        else:
+            log.info("%s -> %s (%d redactions)", result.input_path, result.output_path, result.redactions)
+
+        # Track failures
+        if result.error_code == EXIT_NO_MATCHES:
+            log.warning("NO MATCHES: %s", result.input_path)
+            no_match_failures.append(result.input_path)
+        elif result.error_code == EXIT_VERIFICATION_FAILED:
+            log.error("VERIFY FAILED: %s still has %d matches", result.output_path, result.leaked)
+            verification_failures.append((result.output_path, result.leaked))
+        elif not args.no_verify and result.redactions > 0:
+            log.info("VERIFY OK: %s", result.output_path)
 
     if num_workers == 1:
         # Sequential processing (no subprocess overhead)
         for job in job_args:
             result = _process_single_pdf(job)
-            log.info("%s -> %s (%d redactions)", result.input_path, result.output_path, result.redactions)
-            if result.leaked > 0:
-                log.error("VERIFY FAILED: %s still has %d matches", result.output_path, result.leaked)
-                verification_failures.append((result.output_path, result.leaked))
-            elif not args.no_verify:
-                log.info("VERIFY OK: %s", result.output_path)
+            handle_result(result)
     else:
         # Parallel processing
         with ProcessPoolExecutor(max_workers=num_workers) as pool:
             for result in pool.map(_process_single_pdf, job_args):
-                log.info("%s -> %s (%d redactions)", result.input_path, result.output_path, result.redactions)
-                if result.leaked > 0:
-                    log.error("VERIFY FAILED: %s still has %d matches", result.output_path, result.leaked)
-                    verification_failures.append((result.output_path, result.leaked))
-                elif not args.no_verify:
-                    log.info("VERIFY OK: %s", result.output_path)
+                handle_result(result)
+
+    # Report and exit with appropriate code
+    exit_code = EXIT_SUCCESS
 
     if verification_failures:
         log.error("")
         log.error("Verification failed for %d file(s):", len(verification_failures))
         for path, count in verification_failures:
             log.error("  %s (%d matches)", path, count)
-        sys.exit(1)
+        exit_code = EXIT_VERIFICATION_FAILED
+
+    if no_match_failures:
+        log.warning("")
+        log.warning("No matches found in %d file(s):", len(no_match_failures))
+        for path in no_match_failures:
+            log.warning("  %s", path)
+        if not args.relaxed and exit_code == EXIT_SUCCESS:
+            exit_code = EXIT_NO_MATCHES
+
+    if exit_code != EXIT_SUCCESS:
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

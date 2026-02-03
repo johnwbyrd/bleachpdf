@@ -6,20 +6,6 @@ A tool that blacks out sensitive information in PDF files.
 
 You have a PDF with your Social Security number, bank account numbers, or home address. You need to share it, but you want that private stuff hidden first. This tool finds the sensitive text and covers it with black boxes.
 
-## Important: Always Verify Your Results
-
-No automated redaction system is perfect.  By Rice's theorem, none ever can be.
-
-This tool does a reasonable job with vector PDFs and high-quality scans of printed material. It does less well with handwriting and poor-quality scans. OCR makes mistakes. Patterns can miss edge cases. Unusual fonts or layouts can confuse the text recognition.
-
-**You should manually check every redacted document before sharing it.** Open the output file, look at each page, and verify that:
-
-- All sensitive information is actually covered
-- No extra text was accidentally redacted
-- Nothing slipped through
-
-Never trust this tool -- or *ANY* automated redaction tool -- to do a perfect job for you. Treat it as a helpful first pass, not a replacement for human review.
-
 ## Why Use This Instead of Adobe Acrobat?
 
 **It's free and open source.** You can read every line of code. No subscription, no account, no uploading your sensitive documents to someone else's server. Everything runs on your computer and stays there.
@@ -64,51 +50,7 @@ pip install bleachpdf
 
 ## Setting Up Your Patterns
 
-You need to tell the tool what to look for. Create a file(redactor) jbyrd@dev03:~/git/redactor$ python -m pytest tests/ --limit=100
-============================================== test session starts ==============================================
-platform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.6.0
-rootdir: /home/jbyrd/git/redactor
-configfile: pyproject.toml
-plugins: anyio-4.12.1
-collected 1 item                                                                                                
-
-tests/test_redaction.(redactor) jbyrd@dev03:~/git/redactor$ python -m pytest tests/ --limit=100
-============================================== test session starts ==============================================
-platform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.6.0
-rootdir: /home/jbyrd/git/redactor
-configfile: pyproject.toml
-plugins: anyio-4.12.1
-collected 1 item                                                                                                
-
-tests/test_redaction.py .                                                                                 [100%]
-======================================================================
-REDACTION TEST SUMMARY
-======================================================================
-  Passed:  100
-  Failed:  0
-  Total:   100
-  Pass rate: 100.0%
-
-  Redaction breakdown:
-    With redactions:    0
-    Zero redactions:    0  (suspicious - OCR may have failed)
-    Absent-type tests:  100  (0 redactions expected)
-======================================================================
-py .                                                                                 [100%]
-======================================================================
-REDACTION TEST SUMMARY
-======================================================================
-  Passed:  100
-  Failed:  0
-  Total:   100
-  Pass rate: 100.0%
-
-  Redaction breakdown:
-    With redactions:    0
-    Zero redactions:    0  (suspicious - OCR may have failed)
-    Absent-type tests:  100  (0 redactions expected)
-======================================================================
- called `pii.yaml` in the folder where you'll run the command. There's an example file to get you started:
+You need to tell the tool what to look for. Create a file called `pii.yaml` in the folder where you'll run the command. There's an example file to get you started:
 
 ```bash
 cp pii.example.yaml pii.yaml
@@ -136,29 +78,7 @@ The `(?i)` makes a pattern case-insensitive, so it matches "JohnDoe", "johndoe",
 
 ### About Spaces and Punctuation
 
-Before matching, the tool removes all spaces, dashes, and(redactor) jbyrd@dev03:~/git/redactor$ python -m pytest tests/ --limit=100
-============================================== test session starts ==============================================
-platform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.6.0
-rootdir: /home/jbyrd/git/redactor
-configfile: pyproject.toml
-plugins: anyio-4.12.1
-collected 1 item                                                                                                
-
-tests/test_redaction.py .                                                                                 [100%]
-======================================================================
-REDACTION TEST SUMMARY
-======================================================================
-  Passed:  100
-  Failed:  0
-  Total:   100
-  Pass rate: 100.0%
-
-  Redaction breakdown:
-    With redactions:    0
-    Zero redactions:    0  (suspicious - OCR may have failed)
-    Absent-type tests:  100  (0 redactions expected)
-======================================================================
- punctuation from the text. So if your document shows `123-45-6789`, the tool sees `123456789`. If it shows `John Doe`, the tool sees `JohnDoe`.
+Before matching, the tool removes all spaces, dashes, and punctuation from the text. So if your document shows `123-45-6789`, the tool sees `123456789`. If it shows `John Doe`, the tool sees `JohnDoe`.
 
 Write your patterns without spaces or punctuation:
 
@@ -231,6 +151,7 @@ bleachpdf document.pdf -v
 | `-c, --config` | Use a specific config file |
 | `-j, --jobs N` | Process multiple files at once (default: half your CPU cores) |
 | `-d, --dpi` | Image quality, higher is sharper but slower (default: 300) |
+| `--relaxed` | Don't fail when no matches are found (see below) |
 | `--no-verify` | Skip the safety check that re-scans the output |
 | `-q, --quiet` | Don't print anything |
 | `-v, --verbose` | Print more details |
@@ -241,6 +162,36 @@ bleachpdf document.pdf -v
 After redacting, the tool scans the output file again to make sure nothing was missed. If it still finds matches, something went wrong and it will warn you.
 
 This takes extra time. If you're confident in your patterns and want faster processing, you can skip it with `--no-verify`.
+
+### Exit Codes
+
+The tool returns different exit codes to help you automate redaction workflows:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success — redactions were made and verified |
+| 1 | Configuration error — missing config, invalid patterns, etc. |
+| 2 | File error — input not found, can't write output, etc. |
+| 3 | No matches — the pattern didn't match anything in the document |
+| 4 | Verification failed — text is still visible after redaction |
+
+### Strict vs Relaxed Mode
+
+By default, the tool runs in **strict mode**: if your pattern doesn't match anything in a document, that's treated as an error (exit code 3). This catches problems like:
+
+- Wrong document — you're redacting a file that doesn't contain the sensitive text
+- OCR failure — the text recognition couldn't read the document
+- Bad pattern — your pattern has a typo or doesn't match the actual format
+
+Use strict mode when you *expect* the document to contain the text. A missing match means something went wrong.
+
+If you're processing many documents and some legitimately won't contain the target text, use `--relaxed`:
+
+```bash
+bleachpdf documents/ --relaxed
+```
+
+In relaxed mode, documents with no matches produce a warning instead of an error. The tool still fails (exit code 4) if verification detects leaked text — that's always a hard error that can't be disabled.
 
 ### Processing Multiple Files
 
@@ -265,3 +216,17 @@ These Python libraries do the heavy lifting (installed automatically):
 - **PyYAML** — reads the config file
 - **parsimonious** — matches patterns against text
 - **platformdirs** — finds the right config folder on your system
+
+## Important: Always Verify Your Results
+
+No automated redaction system is perfect.  By Rice's theorem, none ever can be.
+
+This tool does a reasonable job with vector PDFs and high-quality scans of printed material. It does less well with handwriting and poor-quality scans. OCR makes mistakes. Patterns can miss edge cases. Unusual fonts or layouts can confuse the text recognition.
+
+**You should manually check every redacted document before sharing it.** Open the output file, look at each page, and verify that:
+
+- All sensitive information is actually covered
+- No extra text was accidentally redacted
+- Nothing slipped through
+
+Never trust this tool -- or *ANY* automated redaction tool -- to do a perfect job for you. Treat it as a helpful first pass, not a replacement for human review.
