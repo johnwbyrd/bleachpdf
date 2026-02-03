@@ -235,6 +235,14 @@ Note that verification failures (text still visible after redaction) are always 
 
 Think of this tool as a helpful first pass, not a replacement for careful human review.  Also, note carefully the relevant details in the accompanying LICENSE file.
 
+# No license granted for censorship
+
+No license, right, or permission is granted -- expressly or by implication -- to use this software for censorship. This prohibition applies to all parties without exception, including but not limited to: individuals, companies, corporations, partnerships, nonprofit organizations, religious institutions, schools, universities, municipalities, counties, states, provinces, territories, national governments, intergovernmental bodies, and any agents or contractors acting on their behalf.
+
+For the purposes of this restriction, "censorship" means using this software to suppress, obscure, or redact content in books, films, plays, newspapers, periodicals, websites, broadcasts, academic publications, or any other material created for public distribution or consumption, where the purpose is to prevent an audience from seeing the original content rather than to protect specific private information.
+
+This software is designed to protect personal privacy. It is not designed to silence speech, and its author, John Byrd, does not grant permission for it to be used that way.
+
 ## Development
 
 ### Running Tests

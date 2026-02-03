@@ -296,7 +296,13 @@ def redact_image(img: Image.Image, grammars: list[Grammar]) -> tuple[Image.Image
 def render_page(page: fitz.Page, dpi: int) -> Image.Image:
     """Render a PDF page to a PIL Image."""
     pix = page.get_pixmap(dpi=dpi)
-    return Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    # Temporarily allow this specific image size to avoid decompression bomb warning
+    old_limit = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = pix.width * pix.height + 1
+    try:
+        return Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    finally:
+        Image.MAX_IMAGE_PIXELS = old_limit
 
 
 def images_to_pdf(images: list[Image.Image], output_path: str, dpi: int) -> None:
