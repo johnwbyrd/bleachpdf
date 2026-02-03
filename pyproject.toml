@@ -1,0 +1,18 @@
+[project]
+name = "redactor"
+version = "0.1.0"
+description = "PII redaction tool for PDF documents"
+requires-python = ">=3.9"
+dependencies = [
+    "pytesseract>=0.3.10",
+    "Pillow>=10.0.0",
+    "reportlab>=4.0.0",
+    "PyMuPDF>=1.24.0",
+    "PyYAML>=6.0",
+    "parsimonious>=0.10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]

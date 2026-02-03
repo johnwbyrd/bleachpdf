@@ -1,0 +1,26 @@
+# PII patterns for redaction
+# Copy this file to pii.yaml and fill in your values
+#
+# Each pattern is a PEG (Parsing Expression Grammar) using parsimonious syntax.
+# The grammar must define a "match" rule as the entry point.
+# Text is normalized (non-alphanumeric characters removed) before matching.
+
+patterns:
+  # Literal match - exact string (after normalization)
+  - 'match = "123456789"'
+
+  # SSN pattern - 9 consecutive digits
+  - |
+    match = d d d d d d d d d
+    d = ~"[0-9]"
+
+  # Account number with prefix
+  - |
+    match = "ACCT" d d d d d d
+    d = ~"[0-9]"
+
+  # Case-insensitive match using regex
+  - 'match = ~"[Jj][Oo][Hh][Nn][Dd][Oo][Ee]"'
+
+  # Partial match - last 4 digits of known number
+  - 'match = "1234"'
