@@ -234,3 +234,20 @@ Note that verification failures (text still visible after redaction) are always 
 - Was anything accidentally over-redacted?
 
 Think of this tool as a helpful first pass, not a replacement for careful human review.  Also, note carefully the relevant details in the accompanying LICENSE file.
+
+## Development
+
+### Running Tests
+
+```bash
+pip install -e ".[dev]"
+pytest tests/
+```
+
+Tests run in parallel by default, using half your CPU cores. Override with `--jobs`:
+
+```bash
+pytest tests/ --jobs=4        # Use 4 workers
+pytest tests/ -n 1            # Run serially (disable parallelism)
+pytest tests/ --limit=10      # Only run first 10 test cases
+```
