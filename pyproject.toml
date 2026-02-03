@@ -45,10 +45,15 @@ Issues = "https://github.com/johnwbyrd/bleachpdf/issues"
 [project.optional-dependencies]
 dev = [
     "ruff>=0.8.0",
+    "pytest>=7.0.0",
+    "huggingface_hub>=0.20.0",
 ]
 
 [project.scripts]
 bleachpdf = "bleachpdf:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bleachpdf"]
 
 [tool.ruff]
 line-length = 100
