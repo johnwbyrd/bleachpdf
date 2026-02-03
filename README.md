@@ -1,203 +1,187 @@
 # bleachpdf
 
-PII redaction tool for PDF documents. Renders each page to an image, OCRs it, matches against PEG grammar patterns, draws black boxes over matches, and reassembles into a new PDF.
+A tool that blacks out sensitive information in PDF files.
 
-## Why This Approach?
+## What Does This Do?
 
-**Every PDF is treated as a scanned document.** We never extract or trust the PDF's text layer. Instead, we render each page to a high-resolution image and OCR it from scratch. This means:
+You have a PDF with your Social Security number, bank account numbers, or home address. You need to share it, but you want that private stuff hidden first. This tool finds the sensitive text and covers it with black boxes.
 
-- Scanned documents, faxed pages, and image-based PDFs work identically to native digital PDFs
-- Text hidden behind images or in unusual encodings gets caught
-- The output is always a clean image-based PDF with no hidden text layer to leak
+## Why Use This Instead of Adobe Acrobat?
 
-Most redaction tools either rely on the PDF text layer (failing on scans) or use ML/NLP models to detect generic PII patterns (missing unusual formats, producing false positives). This tool takes a different approach: **you define exact patterns using PEG grammars**. Ideal when you know the specific values to redact—your SSN, specific account numbers, known addresses.
+**It's free and open source.** You can read every line of code. No subscription, no account, no uploading your sensitive documents to someone else's server. Everything runs on your computer and stays there.
 
-| Approach | Best For |
-|----------|----------|
-| ML/NLP (Presidio, etc.) | Unknown documents, generic PII detection |
-| Text-layer extraction | Native digital PDFs only |
-| **Image + OCR (this tool)** | Known values, any PDF type, precise control |
+**It works on scanned documents.** Most redaction tools read the text embedded inside a PDF file. That works fine for PDFs created digitally, but fails completely on scanned documents, faxes, or PDFs that are really just pictures of pages.
+
+This tool takes a different approach: it treats every PDF like a scanned document. It converts each page to an image, reads the text using optical character recognition (OCR), finds your sensitive information, draws black boxes over it, and saves a new PDF. The original text layer is ignored entirely, so nothing slips through.
+
+The output is a clean PDF containing only images. There's no hidden text layer that could accidentally leak your information.
 
 ## How It Works
 
-```mermaid
-flowchart LR
-    A[Input PDF] --> B[Render to Image]
-    B --> C[OCR]
-    C --> D[Pattern Match]
-    D --> E[Draw Black Boxes]
-    E --> F[Output PDF]
-
-    B -.- G["(text layer ignored)"]
-```
-
-1. **Render**: Each page is rasterized at configurable DPI (default 300) using PyMuPDF. The PDF's text layer is ignored.
-2. **OCR**: Tesseract extracts words with bounding box coordinates from the rendered image.
-3. **Normalize**: Text is stripped of non-alphanumeric characters (e.g., `123-45-6789` → `123456789`).
-4. **Match**: PEG grammars match against the normalized text stream.
-5. **Redact**: Black rectangles are drawn over matched words on the image.
-6. **Reassemble**: Redacted images are combined into a new PDF.
-7. **Verify**: The output is re-scanned to confirm no patterns remain (can be disabled with `--no-verify`).
-
-The output PDF contains only images -- no searchable text layer, no hidden metadata from the original.
+1. Each page becomes an image
+2. OCR reads the words and their positions
+3. Your patterns are matched against the text
+4. Black boxes cover the matches
+5. A new PDF is created from the redacted images
+6. The output is scanned again to make sure nothing was missed
 
 ## Requirements
 
-- Python 3.9+
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) installed on your system
+- Python 3.9 or newer
+- Tesseract, the OCR engine (this does the actual text recognition)
 
 ## Installation
 
+First, install Tesseract on your system:
+
 ```bash
-# Install Tesseract (Ubuntu/Debian)
+# On Ubuntu or Debian
 sudo apt install tesseract-ocr
 
-# Install Tesseract (macOS)
+# On macOS
 brew install tesseract
-
-# Install bleachpdf
-pip install bleachpdf
-
-# Or install from source
-pip install -e .
 ```
 
-## Configuration
+Then install bleachpdf:
 
-Create a config file with your PII patterns. The tool searches for config in this order:
+```bash
+pip install bleachpdf
+```
 
-1. `-c/--config` command line argument
-2. `$BLEACHPDF_CONFIG` environment variable
-3. `./pii.yaml` (current directory)
-4. `~/.config/bleachpdf/pii.yaml` (user config)
-5. `/etc/xdg/bleachpdf/pii.yaml` (system config)
+## Setting Up Your Patterns
 
-Copy the example config to get started:
+You need to tell the tool what to look for. Create a file called `pii.yaml` in the folder where you'll run the command. There's an example file to get you started:
 
 ```bash
 cp pii.example.yaml pii.yaml
 ```
 
-### Pattern Examples
+Then edit `pii.yaml` to add your own sensitive values.
 
-Each pattern is a [PEG grammar](https://github.com/erikrose/parsimonious) with `match` as the entry point:
+### Writing Patterns
+
+The simplest pattern is just the exact text you want to redact:
 
 ```yaml
 patterns:
-  # Literal match - exact string (after normalization)
+  # Your Social Security number (without dashes)
   - 'match = "123456789"'
 
-  # SSN pattern - 9 consecutive digits
-  - |
-    match = d d d d d d d d d
-    d = ~"[0-9]"
-
-  # Account number with prefix
-  - |
-    match = "ACCT" d d d d d d
-    d = ~"[0-9]"
-
-  # Case-insensitive match using (?i) flag
+  # Your name
   - 'match = ~"(?i)johndoe"'
 
-  # Address with optional suffix (case-insensitive)
-  - |
-    match = ~"(?i)123mainst(reet)?"
-
-  # Partial match - last 4 digits of known number
+  # Last 4 digits of an account
   - 'match = "1234"'
 ```
 
-### Text Normalization
+The `(?i)` makes a pattern case-insensitive, so it matches "JohnDoe", "johndoe", "JOHNDOE", etc.
 
-Before matching, all text is normalized by removing non-alphanumeric characters:
-- `123-45-6789` becomes `123456789`
-- `John Doe` becomes `JohnDoe`
-- `ACCT#12345` becomes `ACCT12345`
+### About Spaces and Punctuation
 
-Your patterns should match against the normalized form.
+Before matching, the tool removes all spaces, dashes, and punctuation from the text. So if your document shows `123-45-6789`, the tool sees `123456789`. If it shows `John Doe`, the tool sees `JohnDoe`.
+
+Write your patterns without spaces or punctuation:
+
+| Document shows | Pattern should be |
+|----------------|-------------------|
+| `123-45-6789` | `"123456789"` |
+| `John Doe` | `~"(?i)johndoe"` |
+| `ACCT #12345` | `"ACCT12345"` |
+
+### Advanced Patterns
+
+For more complex matching, the tool uses a pattern language called PEG (Parsing Expression Grammar). Here's an example that matches any 9-digit number:
+
+```yaml
+patterns:
+  - |
+    match = d d d d d d d d d
+    d = ~"[0-9]"
+```
+
+This says "match nine digits in a row" where `d` means any digit 0-9.
+
+### Where the Config File Can Live
+
+The tool looks for your config file in several places, in this order:
+
+1. The path you specify with `-c` or `--config`
+2. The `BLEACHPDF_CONFIG` environment variable
+3. `pii.yaml` in the current folder
+4. `~/.config/bleachpdf/pii.yaml` (your personal config)
+5. `/etc/xdg/bleachpdf/pii.yaml` (system-wide config)
 
 ## Usage
 
-```bash
-# Single file (output to output/document.pdf)
-bleachpdf document.pdf
+The basic command is:
 
-# Single file with specific output
+```bash
+bleachpdf document.pdf
+```
+
+This creates a redacted version in the `output/` folder.
+
+### More Examples
+
+```bash
+# Save to a specific file
 bleachpdf document.pdf -o redacted.pdf
 
-# Single file to output directory
-bleachpdf document.pdf -o out/
+# Save to a specific folder
+bleachpdf document.pdf -o redacted/
 
-# Directory (recursive, preserves structure)
-bleachpdf data/ -o output/
+# Process a whole folder of PDFs
+bleachpdf documents/ -o redacted/
 
-# Glob pattern (quote to prevent shell expansion)
-bleachpdf "docs/**/*.pdf" -o output/
+# Process multiple files matching a pattern
+bleachpdf "reports/*.pdf" -o redacted/
 
-# Specify config file
-bleachpdf -c mypatterns.yaml document.pdf
+# Use a specific config file
+bleachpdf document.pdf -c my-patterns.yaml
 
-# Quiet mode
-bleachpdf -q document.pdf
-
-# Verbose mode (shows processing progress)
-bleachpdf -v document.pdf
-
-# Parallel processing (4 workers)
-bleachpdf data/ -o output/ -j 4
+# See what's happening
+bleachpdf document.pdf -v
 ```
 
 ### Options
 
-| Option | Description |
-|--------|-------------|
-| `-o, --output` | Output file or directory (default: `output/`) |
-| `-c, --config` | Path to config file |
-| `-j, --jobs N` | Number of parallel workers (default: half of CPU cores) |
-| `-d, --dpi` | Resolution for rendering and output (default: 300) |
-| `--no-verify` | Skip re-scanning output to verify redaction (faster but less safe) |
-| `-q, --quiet` | Suppress output |
-| `-v, --verbose` | Show processing progress |
+| Option | What it does |
+|--------|--------------|
+| `-o, --output` | Where to save the result (default: `output/`) |
+| `-c, --config` | Use a specific config file |
+| `-j, --jobs N` | Process multiple files at once (default: half your CPU cores) |
+| `-d, --dpi` | Image quality, higher is sharper but slower (default: 300) |
+| `--no-verify` | Skip the safety check that re-scans the output |
+| `-q, --quiet` | Don't print anything |
+| `-v, --verbose` | Print more details |
 | `-h, --help` | Show help |
 
-### Output Behavior
+### The Safety Check
 
-| Inputs | `-o` value | Result |
-|--------|------------|--------|
-| Single file | (none) | `output/<filename>.pdf` |
-| Single file | `redacted.pdf` | `redacted.pdf` |
-| Single file | `out/` | `out/<filename>.pdf` |
-| Multiple files | (none) | `output/` preserving structure |
-| Multiple files | `out/` | `out/` preserving structure |
-| Multiple files | `single.pdf` | **Error** |
+After redacting, the tool scans the output file again to make sure nothing was missed. If it still finds matches, something went wrong and it will warn you.
 
-### Verification
+This takes extra time. If you're confident in your patterns and want faster processing, you can skip it with `--no-verify`.
 
-By default, bleachpdf re-scans each output file after redaction to verify that no patterns are still detectable. This runs the same OCR + pattern matching pipeline on the redacted output. If any matches are found, the tool exits with code 1 and reports which files failed.
+### Processing Multiple Files
 
-This catches edge cases where redaction boxes don't fully cover the text. Use `--no-verify` to skip this step if you need faster processing and accept the risk.
-
-### Parallel Processing
-
-When processing multiple files, bleachpdf uses parallel workers to speed up redaction. By default, it uses half of your CPU cores. Use `-j N` to specify a different number of workers:
+When you have many files to redact, the tool processes them in parallel to save time. By default it uses half of your CPU cores. You can change this:
 
 ```bash
 # Use 4 parallel workers
-bleachpdf data/ -o output/ -j 4
+bleachpdf documents/ -j 4
 
-# Use single-threaded processing (no parallelism)
-bleachpdf data/ -o output/ -j 1
+# Process one file at a time (slower but uses less memory)
+bleachpdf documents/ -j 1
 ```
 
-The worker count is automatically clamped to the number of input files and available CPU cores. Tesseract's internal threading is limited to prevent oversubscription.
+## What's Under the Hood
 
-## Dependencies
+These Python libraries do the heavy lifting (installed automatically):
 
-- **pytesseract**: Python wrapper for Tesseract OCR
-- **Pillow**: Image processing
-- **PyMuPDF**: PDF rendering
-- **reportlab**: PDF generation
-- **PyYAML**: Config file parsing
-- **parsimonious**: PEG grammar parsing
-- **platformdirs**: Cross-platform config directory support
+- **pytesseract** — talks to Tesseract for text recognition
+- **Pillow** — handles image manipulation
+- **PyMuPDF** — converts PDF pages to images
+- **reportlab** — creates the output PDF
+- **PyYAML** — reads the config file
+- **parsimonious** — matches patterns against text
+- **platformdirs** — finds the right config folder on your system
