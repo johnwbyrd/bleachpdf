@@ -249,14 +249,14 @@ def images_to_pdf(images: list[Image.Image], output_path: str, dpi: int = 300) -
     c.save()
 
 
-def redact_pdf(input_path: str, output_path: str, patterns: list[str]) -> int:
+def redact_pdf(input_path: str, output_path: str, patterns: list[str], dpi: int = 300) -> int:
     """Redact a PDF file. Returns total redaction count."""
     doc = fitz.open(input_path)
     images: list[Image.Image] = []
     total_redactions = 0
 
     for page in doc:
-        pix = page.get_pixmap(dpi=300)
+        pix = page.get_pixmap(dpi=dpi)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         redacted, count = redact_page(img, patterns)
         images.append(redacted)
@@ -265,7 +265,7 @@ def redact_pdf(input_path: str, output_path: str, patterns: list[str]) -> int:
     doc.close()
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    images_to_pdf(images, output_path)
+    images_to_pdf(images, output_path, dpi=dpi)
 
     log.info("%s -> %s (%d redactions)", input_path, output_path, total_redactions)
 
@@ -385,6 +385,14 @@ Config file lookup order:
         help="show matched patterns",
     )
     parser.add_argument(
+        "-d",
+        "--dpi",
+        type=int,
+        default=300,
+        metavar="DPI",
+        help="resolution for rendering and output (default: 300)",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -437,7 +445,7 @@ Config file lookup order:
     # Process files
     for input_path, base_dir in jobs:
         output_path = resolve_output(input_path, args.output, base_dir)
-        redact_pdf(input_path, output_path, patterns)
+        redact_pdf(input_path, output_path, patterns, dpi=args.dpi)
 
 
 if __name__ == "__main__":

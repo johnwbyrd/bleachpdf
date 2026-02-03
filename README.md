@@ -2,25 +2,28 @@
 
 PII redaction tool for PDF documents. Uses OCR to find text, then matches against PEG grammar patterns defined in a YAML config file and draws black boxes over matches.
 
+**Works on both scanned documents and text-based PDFs.** Because it uses OCR rather than PDF text extraction, it handles scanned bank statements, faxed documents, and image-based PDFs just as well as native digital documents.
+
 ## Why This Tool?
 
-Most PII redaction tools use NLP/ML models (spaCy, Microsoft Presidio, OpenAI) to detect entities like "any SSN" or "any phone number." That approach works for generic detection but can miss unusual formats or produce false positives.
+Most PII redaction tools use NLP/ML models (spaCy, Microsoft Presidio, OpenAI) to detect entities like "any SSN" or "any phone number." That approach works for generic detection but can miss unusual formats or produce false positives. Many also only work on text-layer PDFs, failing on scanned documents.
 
 This tool takes a different approach: **you define exact patterns using PEG grammars**. This is ideal when you know the specific values you need to redact—your own SSN, specific account numbers, known identifiers—rather than trying to detect "anything that looks like an SSN."
 
 | Approach | Best For |
 |----------|----------|
 | ML/NLP (Presidio, etc.) | Unknown documents, generic PII detection |
-| PEG patterns (this tool) | Known values, specific identifiers, precise control |
+| Text-layer tools | Native digital PDFs only |
+| **PEG + OCR (this tool)** | Known values, scanned docs, precise control |
 
 ## How It Works
 
-1. **PDF to Image**: Each PDF page is rendered at 300 DPI using PyMuPDF
+1. **PDF to Image**: Each PDF page is rendered at configurable DPI (default 300) using PyMuPDF
 2. **OCR**: Tesseract extracts words with bounding box coordinates
 3. **Normalization**: Text is stripped of non-alphanumeric characters for matching
 4. **Pattern Matching**: PEG grammars match against the normalized text stream
 5. **Redaction**: Black rectangles are drawn over matched words
-6. **Reassembly**: Redacted images are combined back into a PDF at 300 DPI
+6. **Reassembly**: Redacted images are combined back into a PDF
 
 ## Requirements
 
@@ -128,6 +131,7 @@ bleachpdf -v document.pdf
 |--------|-------------|
 | `-o, --output` | Output file or directory (default: `output/`) |
 | `-c, --config` | Path to config file |
+| `-d, --dpi` | Resolution for rendering and output (default: 300) |
 | `-q, --quiet` | Suppress output |
 | `-v, --verbose` | Show matched patterns |
 | `-h, --help` | Show help |
