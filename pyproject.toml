@@ -1,7 +1,11 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
-name = "redactor"
+name = "bleachpdf"
 version = "0.1.0"
-description = "PII redaction tool for PDF documents"
+description = "PII redaction tool for PDF documents using OCR and PEG pattern matching"
 requires-python = ">=3.9"
 dependencies = [
     "pytesseract>=0.3.10",
@@ -10,7 +14,11 @@ dependencies = [
     "PyMuPDF>=1.24.0",
     "PyYAML>=6.0",
     "parsimonious>=0.10.0",
+    "platformdirs>=4.0.0",
 ]
+
+[project.scripts]
+bleachpdf = "bleachpdf:main"
 
 [project.optional-dependencies]
 dev = [

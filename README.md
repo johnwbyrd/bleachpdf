@@ -1,6 +1,6 @@
-# Redactor
+# bleachpdf
 
-PII redaction tool for PDF documents. Uses OCR to find text, then matches against patterns defined in a YAML config file and draws black boxes over matches.
+PII redaction tool for PDF documents. Uses OCR to find text, then matches against PEG grammar patterns defined in a YAML config file and draws black boxes over matches.
 
 ## Why This Tool?
 
@@ -36,25 +36,32 @@ sudo apt install tesseract-ocr
 # Install Tesseract (macOS)
 brew install tesseract
 
-# Install Python dependencies
-uv sync
-# or
+# Install bleachpdf
+pip install bleachpdf
+
+# Or install from source
 pip install -e .
 ```
 
 ## Configuration
 
-Copy the example config and add your patterns:
+Create a config file with your PII patterns. The tool searches for config in this order:
+
+1. `-c/--config` command line argument
+2. `$BLEACHPDF_CONFIG` environment variable
+3. `./pii.yaml` (current directory)
+4. `~/.config/bleachpdf/pii.yaml` (user config)
+5. `/etc/xdg/bleachpdf/pii.yaml` (system config)
+
+Copy the example config to get started:
 
 ```bash
 cp pii.example.yaml pii.yaml
 ```
 
-Edit `pii.yaml` to define patterns to redact. Each pattern is a [PEG grammar](https://github.com/erikrose/parsimonious) with `match` as the entry point.
-
-**Important**: `pii.yaml` is gitignored to prevent accidentally committing sensitive patterns.
-
 ### Pattern Examples
+
+Each pattern is a [PEG grammar](https://github.com/erikrose/parsimonious) with `match` as the entry point:
 
 ```yaml
 patterns:
@@ -80,7 +87,7 @@ patterns:
 
 ### Text Normalization
 
-Before matching, all text is normalized by removing non-alphanumeric characters. This means:
+Before matching, all text is normalized by removing non-alphanumeric characters:
 - `123-45-6789` becomes `123456789`
 - `John Doe` becomes `JohnDoe`
 - `ACCT#12345` becomes `ACCT12345`
@@ -90,33 +97,51 @@ Your patterns should match against the normalized form.
 ## Usage
 
 ```bash
-# Single file
-python redactor.py document.pdf
+# Single file (output to output/document.pdf)
+bleachpdf document.pdf
 
-# Multiple files
-python redactor.py file1.pdf file2.pdf
+# Single file with specific output
+bleachpdf document.pdf -o redacted.pdf
 
-# Directory (recursive)
-python redactor.py data/
+# Single file to output directory
+bleachpdf document.pdf -o out/
 
-# Glob pattern
-python redactor.py "documents/*.pdf"
+# Directory (recursive, preserves structure)
+bleachpdf data/ -o output/
+
+# Glob pattern (quote to prevent shell expansion)
+bleachpdf "docs/**/*.pdf" -o output/
+
+# Specify config file
+bleachpdf -c mypatterns.yaml document.pdf
+
+# Quiet mode
+bleachpdf -q document.pdf
+
+# Verbose mode (shows matched patterns)
+bleachpdf -v document.pdf
 ```
 
-Output goes to `output/` by default, preserving directory structure:
-- `data/statements/jan.pdf` → `output/statements/jan.pdf`
+### Options
 
-## Project Structure
+| Option | Description |
+|--------|-------------|
+| `-o, --output` | Output file or directory (default: `output/`) |
+| `-c, --config` | Path to config file |
+| `-q, --quiet` | Suppress output |
+| `-v, --verbose` | Show matched patterns |
+| `-h, --help` | Show help |
 
-```
-redactor/
-├── redactor.py       # Main redaction logic and CLI
-├── assembler.py      # PDF assembly from images
-├── pii.yaml          # Your patterns (gitignored)
-├── pii.example.yaml  # Example patterns (committed)
-├── pyproject.toml    # Project configuration
-└── output/           # Redacted PDFs (gitignored)
-```
+### Output Behavior
+
+| Inputs | `-o` value | Result |
+|--------|------------|--------|
+| Single file | (none) | `output/<filename>.pdf` |
+| Single file | `redacted.pdf` | `redacted.pdf` |
+| Single file | `out/` | `out/<filename>.pdf` |
+| Multiple files | (none) | `output/` preserving structure |
+| Multiple files | `out/` | `out/` preserving structure |
+| Multiple files | `single.pdf` | **Error** |
 
 ## Dependencies
 
@@ -126,3 +151,4 @@ redactor/
 - **reportlab**: PDF generation
 - **PyYAML**: Config file parsing
 - **parsimonious**: PEG grammar parsing
+- **platformdirs**: Cross-platform config directory support
