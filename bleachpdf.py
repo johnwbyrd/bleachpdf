@@ -2,8 +2,8 @@
 """
 bleachpdf - PII redaction for PDF documents.
 
-Uses OCR to find text, then matches against PEG grammar patterns
-defined in a YAML config file and draws black boxes over matches.
+Renders each page to an image, OCRs it, matches against PEG grammar patterns,
+draws black boxes over matches, and reassembles into a new PDF.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ import os
 import re
 import sys
 import tempfile
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, NoReturn
 
 import fitz
@@ -36,12 +38,382 @@ CONFIG_FILENAME = "pii.yaml"
 log = logging.getLogger(APP_NAME)
 
 
-# --- Types ---
+# =============================================================================
+# Data Types
+# =============================================================================
 
-WordInfo = dict[str, str | int]
+
+@dataclass(frozen=True, slots=True)
+class Word:
+    """A word extracted from OCR with its bounding box."""
+
+    text: str
+    left: int
+    top: int
+    width: int
+    height: int
+
+    @property
+    def right(self) -> int:
+        return self.left + self.width
+
+    @property
+    def bottom(self) -> int:
+        return self.top + self.height
 
 
-# --- Config ---
+@dataclass(frozen=True, slots=True)
+class TextStream:
+    """Concatenated normalized text with mapping back to source words."""
+
+    text: str
+    word_map: tuple[int, ...]  # char index -> word index
+
+
+@dataclass(frozen=True, slots=True)
+class Box:
+    """A rectangular region to redact."""
+
+    left: int
+    top: int
+    right: int
+    bottom: int
+
+    def as_tuple(self) -> tuple[int, int, int, int]:
+        return (self.left, self.top, self.right, self.bottom)
+
+
+@dataclass(frozen=True)
+class JobResult:
+    """Result from processing a single PDF."""
+
+    input_path: str
+    output_path: str
+    redactions: int
+    leaked: int  # 0 if verification passed or was skipped
+
+
+# =============================================================================
+# Text Processing
+# =============================================================================
+
+
+def normalize(text: str) -> str:
+    """Strip everything except alphanumeric characters."""
+    return re.sub(r"[^A-Za-z0-9]", "", text)
+
+
+def build_stream(words: list[Word]) -> TextStream:
+    """
+    Concatenate normalized words into a single text stream.
+
+    Returns a TextStream where each character maps back to its source word index,
+    allowing pattern matches to span word boundaries.
+    """
+    chars: list[str] = []
+    mapping: list[int] = []
+
+    for i, word in enumerate(words):
+        normalized = normalize(word.text)
+        chars.append(normalized)
+        mapping.extend([i] * len(normalized))
+
+    return TextStream(text="".join(chars), word_map=tuple(mapping))
+
+
+# =============================================================================
+# OCR
+# =============================================================================
+
+
+def ocr_page(img: Image.Image) -> list[Word]:
+    """Extract words with bounding boxes from an image using Tesseract."""
+    data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+    words: list[Word] = []
+
+    for i in range(len(data["text"])):
+        text = data["text"][i].strip()
+        if text:
+            words.append(
+                Word(
+                    text=text,
+                    left=data["left"][i],
+                    top=data["top"][i],
+                    width=max(1, data["width"][i]),
+                    height=max(1, data["height"][i]),
+                )
+            )
+
+    return words
+
+
+# =============================================================================
+# Pattern Matching
+# =============================================================================
+
+
+def compile_grammars(patterns: list[str]) -> list[Grammar]:
+    """Compile PEG patterns into Grammar objects, warning on invalid patterns."""
+    grammars: list[Grammar] = []
+
+    for pattern in patterns:
+        try:
+            grammars.append(Grammar(pattern))
+        except Exception as e:
+            # Only log in main process (workers don't have logging configured)
+            if log.handlers:
+                log.warning("Invalid grammar: %s (%s)", pattern.strip()[:50], e)
+
+    return grammars
+
+
+def find_matches(stream: TextStream, grammars: list[Grammar]) -> set[int]:
+    """
+    Find all pattern matches in the text stream.
+
+    Returns the set of word indices that are part of any match.
+    """
+    matched_words: set[int] = set()
+
+    for grammar in grammars:
+        for start in range(len(stream.text)):
+            try:
+                node: Node | None = grammar.match(stream.text, start)
+                if node:
+                    for i in range(start, start + len(node.text)):
+                        if i < len(stream.word_map):
+                            matched_words.add(stream.word_map[i])
+            except Exception:
+                pass
+
+    return matched_words
+
+
+# =============================================================================
+# Redaction Geometry
+# =============================================================================
+
+
+def group_adjacent_words(matched_indices: set[int], words: list[Word]) -> list[list[int]]:
+    """
+    Group matched word indices that are on the same line and adjacent.
+
+    This allows drawing a single box over "John Doe" rather than two separate boxes.
+    """
+    if not matched_indices:
+        return []
+
+    sorted_indices = sorted(matched_indices)
+    groups: list[list[int]] = []
+    current_group = [sorted_indices[0]]
+
+    for idx in sorted_indices[1:]:
+        prev_idx = current_group[-1]
+        prev = words[prev_idx]
+        curr = words[idx]
+
+        # Same line: vertical positions within 1.5x the height
+        same_line = abs(prev.top - curr.top) < prev.height * 1.5
+
+        # Adjacent: sequential indices or horizontally close
+        adjacent = idx == prev_idx + 1 or (curr.left - prev.right < 50)
+
+        if same_line and adjacent:
+            current_group.append(idx)
+        else:
+            groups.append(current_group)
+            current_group = [idx]
+
+    groups.append(current_group)
+    return groups
+
+
+def compute_box(words: list[Word], indices: list[int], img_size: tuple[int, int], pad: int = 4) -> Box:
+    """Compute the bounding box for a group of words, with padding."""
+    img_w, img_h = img_size
+    group_words = [words[i] for i in indices]
+
+    return Box(
+        left=max(0, min(w.left for w in group_words) - pad),
+        top=max(0, min(w.top for w in group_words) - pad),
+        right=min(img_w, max(w.right for w in group_words) + pad),
+        bottom=min(img_h, max(w.bottom for w in group_words) + pad),
+    )
+
+
+# =============================================================================
+# Image Redaction
+# =============================================================================
+
+
+def draw_redactions(img: Image.Image, boxes: list[Box]) -> Image.Image:
+    """Draw black rectangles over the specified regions."""
+    img = img.copy()
+    draw = ImageDraw.Draw(img)
+
+    for box in boxes:
+        draw.rectangle(box.as_tuple(), fill="black")
+
+    return img
+
+
+def redact_image(img: Image.Image, grammars: list[Grammar]) -> tuple[Image.Image, int]:
+    """
+    Redact PII from a single image.
+
+    Returns (redacted_image, number_of_redactions).
+    """
+    words = ocr_page(img)
+    if not words:
+        return img, 0
+
+    stream = build_stream(words)
+    matched = find_matches(stream, grammars)
+    if not matched:
+        return img, 0
+
+    groups = group_adjacent_words(matched, words)
+    boxes = [compute_box(words, group, img.size) for group in groups]
+
+    return draw_redactions(img, boxes), len(boxes)
+
+
+# =============================================================================
+# PDF Operations
+# =============================================================================
+
+
+def render_page(page: fitz.Page, dpi: int) -> Image.Image:
+    """Render a PDF page to a PIL Image."""
+    pix = page.get_pixmap(dpi=dpi)
+    return Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+
+def images_to_pdf(images: list[Image.Image], output_path: str, dpi: int) -> None:
+    """Assemble images into a PDF at the specified DPI."""
+    c = canvas.Canvas(output_path)
+
+    for img in images:
+        px_w, px_h = img.size
+        pt_w = px_w * 72 / dpi
+        pt_h = px_h * 72 / dpi
+        c.setPageSize((pt_w, pt_h))
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            img.save(tmp, "PNG")
+            tmp_path = tmp.name
+
+        c.drawImage(tmp_path, 0, 0, pt_w, pt_h)
+        c.showPage()
+        os.unlink(tmp_path)
+
+    c.save()
+
+
+def redact_pdf(
+    input_path: str, output_path: str, grammars: list[Grammar], dpi: int = 300
+) -> int:
+    """
+    Redact a PDF file.
+
+    Returns the total number of redactions made.
+    """
+    doc = fitz.open(input_path)
+    images: list[Image.Image] = []
+    total_redactions = 0
+
+    for page in doc:
+        img = render_page(page, dpi)
+        redacted, count = redact_image(img, grammars)
+        images.append(redacted)
+        total_redactions += count
+
+    doc.close()
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    images_to_pdf(images, output_path, dpi)
+
+    return total_redactions
+
+
+def scan_pdf(input_path: str, grammars: list[Grammar], dpi: int = 300) -> int:
+    """
+    Scan a PDF for pattern matches without redacting.
+
+    Returns the number of matches found (used for verification).
+    """
+    doc = fitz.open(input_path)
+    total_matches = 0
+
+    for page in doc:
+        img = render_page(page, dpi)
+        words = ocr_page(img)
+        if not words:
+            continue
+
+        stream = build_stream(words)
+        matched = find_matches(stream, grammars)
+        if matched:
+            groups = group_adjacent_words(matched, words)
+            total_matches += len(groups)
+
+    doc.close()
+    return total_matches
+
+
+# =============================================================================
+# Parallel Processing
+# =============================================================================
+
+
+def _process_single_pdf(args: tuple[str, str, list[str], int, bool]) -> JobResult:
+    """
+    Worker function for parallel PDF processing.
+
+    Takes a tuple of (input_path, output_path, patterns, dpi, verify).
+    Compiles grammars in this process since Grammar objects can't be pickled.
+    """
+    input_path, output_path, patterns, dpi, verify = args
+
+    # Compile grammars in this worker process
+    grammars = compile_grammars(patterns)
+
+    redactions = redact_pdf(input_path, output_path, grammars, dpi)
+
+    leaked = 0
+    if verify:
+        leaked = scan_pdf(output_path, grammars, dpi)
+
+    return JobResult(
+        input_path=input_path,
+        output_path=output_path,
+        redactions=redactions,
+        leaked=leaked,
+    )
+
+
+def get_worker_count(jobs_arg: int | None, num_jobs: int) -> int:
+    """
+    Determine number of workers.
+
+    Default: half the CPU count.
+    Clamped to: at least 1, at most the number of jobs.
+    """
+    cpu_count = os.cpu_count() or 1
+
+    if jobs_arg is None:
+        # Default: half the cores
+        workers = max(1, cpu_count // 2)
+    else:
+        workers = jobs_arg
+
+    # Clamp to reasonable bounds
+    return max(1, min(workers, num_jobs, cpu_count))
+
+
+# =============================================================================
+# Configuration
+# =============================================================================
 
 
 def find_config(cli_path: str | None = None) -> str | None:
@@ -73,233 +445,16 @@ def find_config(cli_path: str | None = None) -> str | None:
     return None
 
 
-def load_config(path: str) -> list[str]:
-    """Load patterns from YAML config file."""
+def load_patterns(path: str) -> list[str]:
+    """Load pattern strings from a YAML config file."""
     with open(path) as f:
         config = yaml.safe_load(f)
     return [str(p) for p in config.get("patterns", [])]
 
 
-# --- OCR ---
-
-
-def ocr_page(img: Image.Image) -> list[WordInfo]:
-    """OCR image, return list of {text, left, top, width, height}."""
-    data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-    words: list[WordInfo] = []
-    for i in range(len(data["text"])):
-        text = data["text"][i].strip()
-        if text:
-            words.append(
-                {
-                    "text": text,
-                    "left": data["left"][i],
-                    "top": data["top"][i],
-                    "width": max(1, data["width"][i]),
-                    "height": max(1, data["height"][i]),
-                }
-            )
-    return words
-
-
-# --- Pattern Matching ---
-
-
-def normalize(text: str) -> str:
-    """Strip everything except alphanumeric."""
-    return re.sub(r"[^A-Za-z0-9]", "", text)
-
-
-def build_text_stream(words: list[WordInfo]) -> tuple[str, list[int]]:
-    """
-    Concatenate normalized words into a stream.
-    Returns (stream, mappings) where mappings[char_index] = word_index.
-    """
-    stream = ""
-    mappings: list[int] = []
-    for i, w in enumerate(words):
-        norm = normalize(str(w["text"]))
-        for _ in norm:
-            mappings.append(i)
-        stream += norm
-    return stream, mappings
-
-
-def find_matches(stream: str, mappings: list[int], patterns: list[str]) -> set[int]:
-    """Find all pattern matches, return set of word indices."""
-    matched_words: set[int] = set()
-    for pattern in patterns:
-        try:
-            grammar = Grammar(pattern)
-        except Exception as e:
-            log.warning("Invalid grammar: %s (%s)", pattern, e)
-            continue
-
-        for start in range(len(stream)):
-            try:
-                node: Node | None = grammar.match(stream, start)
-                if node:
-                    for i in range(start, start + len(node.text)):
-                        if i < len(mappings):
-                            matched_words.add(mappings[i])
-            except Exception:
-                pass
-    return matched_words
-
-
-# --- Redaction ---
-
-
-def group_adjacent_words(matched_indices: set[int], words: list[WordInfo]) -> list[list[int]]:
-    """Group matched word indices that are on the same line and adjacent."""
-    if not matched_indices:
-        return []
-
-    sorted_indices = sorted(matched_indices)
-    groups: list[list[int]] = []
-    current_group = [sorted_indices[0]]
-
-    for idx in sorted_indices[1:]:
-        prev_idx = current_group[-1]
-        prev_w = words[prev_idx]
-        curr_w = words[idx]
-        prev_top = int(prev_w["top"])
-        curr_top = int(curr_w["top"])
-        prev_height = int(prev_w["height"])
-        prev_left = int(prev_w["left"])
-        prev_width = int(prev_w["width"])
-        curr_left = int(curr_w["left"])
-
-        same_line = abs(prev_top - curr_top) < prev_height * 1.5
-        close = idx == prev_idx + 1 or (curr_left - (prev_left + prev_width) < 50)
-
-        if same_line and close:
-            current_group.append(idx)
-        else:
-            groups.append(current_group)
-            current_group = [idx]
-
-    groups.append(current_group)
-    return groups
-
-
-def words_to_box(
-    words: list[WordInfo], indices: list[int], img_w: int, img_h: int, pad: int = 4
-) -> tuple[int, int, int, int] | None:
-    """Compute bounding box for a set of word indices."""
-    ws = [words[i] for i in indices]
-    if not ws:
-        return None
-    left = min(int(w["left"]) for w in ws) - pad
-    top = min(int(w["top"]) for w in ws) - pad
-    right = max(int(w["left"]) + int(w["width"]) for w in ws) + pad
-    bottom = max(int(w["top"]) + int(w["height"]) for w in ws) + pad
-    return (
-        max(0, left),
-        max(0, top),
-        min(img_w, right),
-        min(img_h, bottom),
-    )
-
-
-def redact_page(img: Image.Image, patterns: list[str]) -> tuple[Image.Image, int]:
-    """Redact a single page image. Returns (redacted_image, num_redactions)."""
-    img = img.copy()
-    w, h = img.size
-
-    words = ocr_page(img)
-    if not words:
-        return img, 0
-
-    stream, mappings = build_text_stream(words)
-    matched = find_matches(stream, mappings, patterns)
-
-    if not matched:
-        return img, 0
-
-    groups = group_adjacent_words(matched, words)
-
-    draw = ImageDraw.Draw(img)
-    for group in groups:
-        box = words_to_box(words, group, w, h)
-        if box:
-            draw.rectangle(box, fill="black")
-
-    return img, len(groups)
-
-
-# --- PDF I/O ---
-
-
-def images_to_pdf(images: list[Image.Image], output_path: str, dpi: int = 300) -> None:
-    """Convert images to PDF at specified DPI."""
-    c = canvas.Canvas(output_path)
-    for img in images:
-        px_w, px_h = img.size
-        pt_w = px_w * 72 / dpi
-        pt_h = px_h * 72 / dpi
-        c.setPageSize((pt_w, pt_h))
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            img.save(tmp, "PNG")
-            tmp_path = tmp.name
-        c.drawImage(tmp_path, 0, 0, pt_w, pt_h)
-        c.showPage()
-        os.unlink(tmp_path)
-    c.save()
-
-
-def scan_pdf(input_path: str, patterns: list[str], dpi: int = 300) -> int:
-    """Scan a PDF for pattern matches without redacting. Returns match count."""
-    doc = fitz.open(input_path)
-    total_matches = 0
-
-    for page in doc:
-        pix = page.get_pixmap(dpi=dpi)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-        words = ocr_page(img)
-        if not words:
-            continue
-
-        stream, mappings = build_text_stream(words)
-        matched = find_matches(stream, mappings, patterns)
-
-        if matched:
-            groups = group_adjacent_words(matched, words)
-            total_matches += len(groups)
-
-    doc.close()
-    return total_matches
-
-
-def redact_pdf(input_path: str, output_path: str, patterns: list[str], dpi: int = 300) -> int:
-    """Redact a PDF file. Returns total redaction count."""
-    doc = fitz.open(input_path)
-    images: list[Image.Image] = []
-    total_redactions = 0
-    num_pages = len(doc)
-
-    log.debug("%s: processing %d page(s)", input_path, num_pages)
-
-    for page_num, page in enumerate(doc, 1):
-        log.debug("  page %d/%d", page_num, num_pages)
-        pix = page.get_pixmap(dpi=dpi)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        redacted, count = redact_page(img, patterns)
-        images.append(redacted)
-        total_redactions += count
-
-    doc.close()
-
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    images_to_pdf(images, output_path, dpi=dpi)
-
-    log.info("%s -> %s (%d redactions)", input_path, output_path, total_redactions)
-
-    return total_redactions
-
-
-# --- CLI ---
+# =============================================================================
+# CLI
+# =============================================================================
 
 
 def resolve_output(input_path: str, output_arg: str | None, base_dir: str | None = None) -> str:
@@ -327,9 +482,11 @@ def resolve_output(input_path: str, output_arg: str | None, base_dir: str | None
 def collect_inputs(args: list[str]) -> list[tuple[str, str | None]]:
     """
     Collect PDF files from input arguments.
+
     Returns list of (input_path, base_dir) tuples.
     """
     jobs: list[tuple[str, str | None]] = []
+
     for arg in args:
         if "*" in arg or "?" in arg:
             for p in glob.glob(arg, recursive=True):
@@ -342,6 +499,7 @@ def collect_inputs(args: list[str]) -> list[tuple[str, str | None]]:
             jobs.append((arg, None))
         else:
             log.warning("Skipping non-PDF file: %s", arg)
+
     return jobs
 
 
@@ -354,7 +512,6 @@ def setup_logging(*, quiet: bool = False, verbose: bool = False) -> None:
     else:
         level = logging.INFO
 
-    # Only configure our logger, not the root logger (avoids library noise)
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter("%(message)s"))
     log.addHandler(handler)
@@ -409,6 +566,13 @@ Config file lookup order:
         help="path to config file (default: pii.yaml)",
     )
     parser.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        metavar="N",
+        help="number of parallel workers (default: half of CPU cores)",
+    )
+    parser.add_argument(
         "-q",
         "--quiet",
         action="store_true",
@@ -418,7 +582,7 @@ Config file lookup order:
         "-v",
         "--verbose",
         action="store_true",
-        help="show each pattern match found",
+        help="show processing progress",
     )
     parser.add_argument(
         "-d",
@@ -440,7 +604,6 @@ Config file lookup order:
     )
 
     args = parser.parse_args()
-
     setup_logging(quiet=args.quiet, verbose=args.verbose)
 
     # Find and load config
@@ -460,9 +623,16 @@ Config file lookup order:
 
     log.info("Using config: %s", config_path)
 
-    patterns = load_config(config_path)
+    # Load patterns (grammars compiled per-worker for parallelism)
+    patterns = load_patterns(config_path)
     if not patterns:
         log.error("No patterns defined in config file.")
+        sys.exit(1)
+
+    # Validate patterns by compiling in main process
+    grammars = compile_grammars(patterns)
+    if not grammars:
+        log.error("No valid patterns after compilation.")
         sys.exit(1)
 
     # Collect input files
@@ -483,20 +653,43 @@ Config file lookup order:
             )
             sys.exit(1)
 
+    # Build job arguments
+    job_args: list[tuple[str, str, list[str], int, bool]] = []
+    for input_path, base_dir in jobs:
+        output_path = resolve_output(input_path, args.output, base_dir)
+        job_args.append((input_path, output_path, patterns, args.dpi, not args.no_verify))
+
+    # Determine parallelism
+    num_workers = get_worker_count(args.jobs, len(jobs))
+
+    # Limit Tesseract's internal threading to avoid oversubscription
+    os.environ["OMP_THREAD_LIMIT"] = "1"
+
+    log.debug("Processing %d file(s) with %d worker(s)", len(jobs), num_workers)
+
     # Process files
     verification_failures: list[tuple[str, int]] = []
 
-    for input_path, base_dir in jobs:
-        output_path = resolve_output(input_path, args.output, base_dir)
-        redact_pdf(input_path, output_path, patterns, dpi=args.dpi)
-
-        if not args.no_verify:
-            leaked = scan_pdf(output_path, patterns, dpi=args.dpi)
-            if leaked > 0:
-                log.error("VERIFY FAILED: %s still has %d matches", output_path, leaked)
-                verification_failures.append((output_path, leaked))
-            else:
-                log.info("VERIFY OK: %s", output_path)
+    if num_workers == 1:
+        # Sequential processing (no subprocess overhead)
+        for job in job_args:
+            result = _process_single_pdf(job)
+            log.info("%s -> %s (%d redactions)", result.input_path, result.output_path, result.redactions)
+            if result.leaked > 0:
+                log.error("VERIFY FAILED: %s still has %d matches", result.output_path, result.leaked)
+                verification_failures.append((result.output_path, result.leaked))
+            elif not args.no_verify:
+                log.info("VERIFY OK: %s", result.output_path)
+    else:
+        # Parallel processing
+        with ProcessPoolExecutor(max_workers=num_workers) as pool:
+            for result in pool.map(_process_single_pdf, job_args):
+                log.info("%s -> %s (%d redactions)", result.input_path, result.output_path, result.redactions)
+                if result.leaked > 0:
+                    log.error("VERIFY FAILED: %s still has %d matches", result.output_path, result.leaked)
+                    verification_failures.append((result.output_path, result.leaked))
+                elif not args.no_verify:
+                    log.info("VERIFY OK: %s", result.output_path)
 
     if verification_failures:
         log.error("")

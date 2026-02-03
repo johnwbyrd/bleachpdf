@@ -143,6 +143,9 @@ bleachpdf -q document.pdf
 
 # Verbose mode (shows processing progress)
 bleachpdf -v document.pdf
+
+# Parallel processing (4 workers)
+bleachpdf data/ -o output/ -j 4
 ```
 
 ### Options
@@ -151,6 +154,7 @@ bleachpdf -v document.pdf
 |--------|-------------|
 | `-o, --output` | Output file or directory (default: `output/`) |
 | `-c, --config` | Path to config file |
+| `-j, --jobs N` | Number of parallel workers (default: half of CPU cores) |
 | `-d, --dpi` | Resolution for rendering and output (default: 300) |
 | `--no-verify` | Skip re-scanning output to verify redaction (faster but less safe) |
 | `-q, --quiet` | Suppress output |
@@ -173,6 +177,20 @@ bleachpdf -v document.pdf
 By default, bleachpdf re-scans each output file after redaction to verify that no patterns are still detectable. This runs the same OCR + pattern matching pipeline on the redacted output. If any matches are found, the tool exits with code 1 and reports which files failed.
 
 This catches edge cases where redaction boxes don't fully cover the text. Use `--no-verify` to skip this step if you need faster processing and accept the risk.
+
+### Parallel Processing
+
+When processing multiple files, bleachpdf uses parallel workers to speed up redaction. By default, it uses half of your CPU cores. Use `-j N` to specify a different number of workers:
+
+```bash
+# Use 4 parallel workers
+bleachpdf data/ -o output/ -j 4
+
+# Use single-threaded processing (no parallelism)
+bleachpdf data/ -o output/ -j 1
+```
+
+The worker count is automatically clamped to the number of input files and available CPU cores. Tesseract's internal threading is limited to prevent oversubscription.
 
 ## Dependencies
 
