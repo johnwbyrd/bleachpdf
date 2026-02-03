@@ -588,6 +588,14 @@ Config file lookup order:
         help="output file (single input) or directory (default: output/)",
     )
     parser.add_argument(
+        "-m",
+        "--match",
+        action="append",
+        metavar="TEXT",
+        dest="matches",
+        help="literal text to redact (case-insensitive, repeatable)",
+    )
+    parser.add_argument(
         "-c",
         "--config",
         metavar="CONFIG",
@@ -639,9 +647,23 @@ Config file lookup order:
     args = parser.parse_args()
     setup_logging(quiet=args.quiet, verbose=args.verbose)
 
-    # Find and load config
+    # Build patterns from CLI -m arguments
+    patterns: list[str] = []
+    if args.matches:
+        for text in args.matches:
+            # Escape special regex chars in the literal text
+            escaped = re.escape(text)
+            patterns.append(f'match = ~"{escaped}"i')
+        log.debug("CLI patterns: %d", len(patterns))
+
+    # Load patterns from config file (optional if -m provided)
     config_path = find_config(args.config)
-    if not config_path:
+    if config_path:
+        log.info("Using config: %s", config_path)
+        config_patterns = load_patterns(config_path)
+        patterns.extend(config_patterns)
+    elif not patterns:
+        # No -m and no config file
         locations = [
             "./pii.yaml",
             os.path.join(user_config_dir(APP_NAME), CONFIG_FILENAME),
@@ -651,16 +673,12 @@ Config file lookup order:
         for loc in locations:
             log.error("  %s", loc)
         log.error("")
-        log.error("Set $BLEACHPDF_CONFIG or use -c to specify a config file.")
-        sys.exit(1)
+        log.error("Use -m to specify patterns or -c to specify a config file.")
+        sys.exit(EXIT_CONFIG_ERROR)
 
-    log.info("Using config: %s", config_path)
-
-    # Load patterns (grammars compiled per-worker for parallelism)
-    patterns = load_patterns(config_path)
     if not patterns:
-        log.error("No patterns defined in config file.")
-        sys.exit(1)
+        log.error("No patterns defined. Use -m or add patterns to config file.")
+        sys.exit(EXIT_CONFIG_ERROR)
 
     # Validate patterns by compiling in main process
     grammars = compile_grammars(patterns)

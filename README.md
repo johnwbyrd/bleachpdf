@@ -20,21 +20,15 @@ brew install tesseract
 pip install bleachpdf
 ```
 
-**3. Create a config file** called `pii.yaml`:
-
-```yaml
-patterns:
-  - 'match = "123456789"'     # SSN (without dashes)
-  - 'match = "JohnDoe"'       # Name (without spaces)
-```
-
-**4. Run it:**
+**3. Run it:**
 
 ```bash
-bleachpdf document.pdf
+bleachpdf document.pdf -m "123456789" -m "JohnDoe"
 ```
 
 Output goes to `output/document.pdf` with black boxes over any matches.
+
+For complex patterns or repeated use, put patterns in a config file instead (see [Writing Patterns](#writing-patterns)).
 
 ## Why This Tool?
 
@@ -89,11 +83,11 @@ Define reusable rules to match categories of characters:
 ```yaml
 patterns:
   - |
-    match = digit digit digit digit
-    digit = "0" / "1" / "2" / "3" / "4" / "5" / "6" / "7" / "8" / "9"
+    match = d d d d
+    d = ~"[0-9]"
 ```
 
-This matches any 4-digit number. The `/` means "or" — a digit is 0 or 1 or 2... etc.
+This matches any 4-digit number. The `~"[0-9]"` means "any digit 0-9".
 
 ### Sequences
 
@@ -102,8 +96,8 @@ Rules separated by spaces match in order:
 ```yaml
 patterns:
   - |
-    match = "ACCT" digit digit digit digit
-    digit = "0" / "1" / "2" / "3" / "4" / "5" / "6" / "7" / "8" / "9"
+    match = "ACCT" d d d d
+    d = ~"[0-9]"
 ```
 
 This matches "ACCT" followed by exactly 4 digits: `ACCT1234`, `ACCT0001`, etc.
@@ -116,10 +110,10 @@ Use `+` for "one or more" and `*` for "zero or more":
 patterns:
   - |
     match = letter+
-    letter = "A"/"B"/"C"/"D"/"E"/"F"/"G"/"H"/"I"/"J"/"K"/"L"/"M"/"N"/"O"/"P"/"Q"/"R"/"S"/"T"/"U"/"V"/"W"/"X"/"Y"/"Z"
+    letter = ~"[A-Za-z]"
 ```
 
-This matches any sequence of uppercase letters.
+This matches any sequence of letters.
 
 ### Practical Examples
 
@@ -129,7 +123,7 @@ This matches any sequence of uppercase letters.
 patterns:
   - |
     match = d d d d d d d d d
-    d = "0"/"1"/"2"/"3"/"4"/"5"/"6"/"7"/"8"/"9"
+    d = ~"[0-9]"
 ```
 
 **Phone Number** (10 digits):
@@ -138,7 +132,7 @@ patterns:
 patterns:
   - |
     match = d d d d d d d d d d
-    d = "0"/"1"/"2"/"3"/"4"/"5"/"6"/"7"/"8"/"9"
+    d = ~"[0-9]"
 ```
 
 **Account Number** (ACCT followed by digits):
@@ -147,7 +141,7 @@ patterns:
 patterns:
   - |
     match = "ACCT" d+
-    d = "0"/"1"/"2"/"3"/"4"/"5"/"6"/"7"/"8"/"9"
+    d = ~"[0-9]"
 ```
 
 **Name** (case-insensitive):
@@ -191,6 +185,7 @@ bleachpdf document.pdf -v                 # Verbose output
 
 | Option | Description |
 |--------|-------------|
+| `-m, --match` | Text to redact (case-insensitive, repeatable) |
 | `-o, --output` | Output file or directory (default: `output/`) |
 | `-c, --config` | Config file path |
 | `-d, --dpi` | Image resolution (default: 300) |
