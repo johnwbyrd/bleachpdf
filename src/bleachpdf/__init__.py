@@ -17,7 +17,7 @@ import re
 import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, NoReturn
 
 import fitz
@@ -103,14 +103,23 @@ class JobResult:
     retried_dpi: int | None = None  # DPI used on retry, or None if no retry
 
 
+@dataclass(frozen=True)
+class Config:
+    """Configuration for PDF processing."""
+
+    dpi: int = 300
+    lang: str = "eng"
+    verify: bool = True
+
+
 # =============================================================================
 # Text Processing
 # =============================================================================
 
 
 def normalize(text: str) -> str:
-    """Strip everything except alphanumeric characters."""
-    return re.sub(r"[^A-Za-z0-9]", "", text)
+    """Strip everything except alphanumeric characters (Unicode-aware)."""
+    return "".join(c for c in text if c.isalnum())
 
 
 def build_stream(words: list[Word]) -> TextStream:
@@ -136,9 +145,9 @@ def build_stream(words: list[Word]) -> TextStream:
 # =============================================================================
 
 
-def ocr_page(img: Image.Image) -> list[Word]:
+def ocr_page(img: Image.Image, config: Config) -> list[Word]:
     """Extract words with bounding boxes from an image using Tesseract."""
-    data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+    data = pytesseract.image_to_data(img, lang=config.lang, output_type=pytesseract.Output.DICT)
     words: list[Word] = []
 
     for i in range(len(data["text"])):
@@ -238,7 +247,9 @@ def group_adjacent_words(matched_indices: set[int], words: list[Word]) -> list[l
     return groups
 
 
-def compute_box(words: list[Word], indices: list[int], img_size: tuple[int, int], pad: int = 4) -> Box:
+def compute_box(
+    words: list[Word], indices: list[int], img_size: tuple[int, int], pad: int = 4
+) -> Box:
     """Compute the bounding box for a group of words, with padding."""
     img_w, img_h = img_size
     group_words = [words[i] for i in indices]
@@ -267,13 +278,15 @@ def draw_redactions(img: Image.Image, boxes: list[Box]) -> Image.Image:
     return img
 
 
-def redact_image(img: Image.Image, grammars: list[Grammar]) -> tuple[Image.Image, int]:
+def redact_image(
+    img: Image.Image, grammars: list[Grammar], config: Config
+) -> tuple[Image.Image, int]:
     """
     Redact PII from a single image.
 
     Returns (redacted_image, number_of_redactions).
     """
-    words = ocr_page(img)
+    words = ocr_page(img, config)
     if not words:
         return img, 0
 
@@ -332,7 +345,10 @@ def images_to_pdf(images: list[Image.Image], output_path: str, dpi: int) -> None
 
 
 def redact_pdf(
-    input_path: str, output_path: str, grammars: list[Grammar], dpi: int = 300
+    input_path: str,
+    output_path: str,
+    grammars: list[Grammar],
+    config: Config,
 ) -> int:
     """
     Redact a PDF file.
@@ -343,29 +359,29 @@ def redact_pdf(
 
     # Set pixel limit for this document to avoid decompression bomb warnings
     old_limit = Image.MAX_IMAGE_PIXELS
-    Image.MAX_IMAGE_PIXELS = _max_pixels_for_doc(doc, dpi) + 1
+    Image.MAX_IMAGE_PIXELS = _max_pixels_for_doc(doc, config.dpi) + 1
 
     try:
         images: list[Image.Image] = []
         total_redactions = 0
 
         for page in doc:
-            img = render_page(page, dpi)
-            redacted, count = redact_image(img, grammars)
+            img = render_page(page, config.dpi)
+            redacted, count = redact_image(img, grammars, config)
             images.append(redacted)
             total_redactions += count
 
         doc.close()
 
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        images_to_pdf(images, output_path, dpi)
+        images_to_pdf(images, output_path, config.dpi)
 
         return total_redactions
     finally:
         Image.MAX_IMAGE_PIXELS = old_limit
 
 
-def scan_pdf(input_path: str, grammars: list[Grammar], dpi: int = 300) -> int:
+def scan_pdf(input_path: str, grammars: list[Grammar], config: Config) -> int:
     """
     Scan a PDF for pattern matches without redacting.
 
@@ -375,14 +391,14 @@ def scan_pdf(input_path: str, grammars: list[Grammar], dpi: int = 300) -> int:
 
     # Set pixel limit for this document to avoid decompression bomb warnings
     old_limit = Image.MAX_IMAGE_PIXELS
-    Image.MAX_IMAGE_PIXELS = _max_pixels_for_doc(doc, dpi) + 1
+    Image.MAX_IMAGE_PIXELS = _max_pixels_for_doc(doc, config.dpi) + 1
 
     try:
         total_matches = 0
 
         for page in doc:
-            img = render_page(page, dpi)
-            words = ocr_page(img)
+            img = render_page(page, config.dpi)
+            words = ocr_page(img, config)
             if not words:
                 continue
 
@@ -403,28 +419,29 @@ def scan_pdf(input_path: str, grammars: list[Grammar], dpi: int = 300) -> int:
 # =============================================================================
 
 
-def _process_single_pdf(args: tuple[str, str, list[str], int, bool]) -> JobResult:
+def _process_single_pdf(args: tuple[str, str, list[str], Config]) -> JobResult:
     """
     Worker function for parallel PDF processing.
 
-    Takes a tuple of (input_path, output_path, patterns, dpi, verify).
+    Takes a tuple of (input_path, output_path, patterns, config).
     Compiles grammars in this process since Grammar objects can't be pickled.
 
     If no matches are found at the initial DPI, retries at 2x DPI.
     """
-    input_path, output_path, patterns, dpi, verify = args
+    input_path, output_path, patterns, config = args
 
     # Compile grammars in this worker process
     grammars = compile_grammars(patterns)
 
     # First attempt at base DPI
-    redactions = redact_pdf(input_path, output_path, grammars, dpi)
+    redactions = redact_pdf(input_path, output_path, grammars, config)
     retried_dpi = None
 
     # Retry at higher DPI if no matches found
     if redactions == 0:
-        retried_dpi = dpi * 2
-        redactions = redact_pdf(input_path, output_path, grammars, retried_dpi)
+        retried_dpi = config.dpi * 2
+        retry_config = replace(config, dpi=retried_dpi)
+        redactions = redact_pdf(input_path, output_path, grammars, retry_config)
 
     # Determine error code
     error_code = EXIT_SUCCESS
@@ -432,9 +449,12 @@ def _process_single_pdf(args: tuple[str, str, list[str], int, bool]) -> JobResul
 
     if redactions == 0:
         error_code = EXIT_NO_MATCHES
-    elif verify:
-        final_dpi = retried_dpi if retried_dpi else dpi
-        leaked = scan_pdf(output_path, grammars, final_dpi)
+    elif config.verify:
+        if retried_dpi:
+            verify_config = replace(config, dpi=retried_dpi)
+        else:
+            verify_config = config
+        leaked = scan_pdf(output_path, grammars, verify_config)
         if leaked > 0:
             error_code = EXIT_VERIFICATION_FAILED
 
@@ -662,6 +682,13 @@ Config file lookup order:
         help="skip re-scanning output to verify redaction (faster but less safe)",
     )
     parser.add_argument(
+        "--lang",
+        type=str,
+        default="eng",
+        metavar="LANG",
+        help="Tesseract language(s) for OCR, e.g. 'eng', 'eng+kor' (default: eng)",
+    )
+    parser.add_argument(
         "--relaxed",
         action="store_true",
         help="don't fail if no matches found (default: strict mode fails with exit code 3)",
@@ -732,11 +759,12 @@ Config file lookup order:
             )
             sys.exit(1)
 
-    # Build job arguments
-    job_args: list[tuple[str, str, list[str], int, bool]] = []
+    # Build config and job arguments
+    config = Config(dpi=args.dpi, lang=args.lang, verify=not args.no_verify)
+    job_args: list[tuple[str, str, list[str], Config]] = []
     for input_path, base_dir in jobs:
         output_path = resolve_output(input_path, args.output, base_dir)
-        job_args.append((input_path, output_path, patterns, args.dpi, not args.no_verify))
+        job_args.append((input_path, output_path, patterns, config))
 
     # Determine parallelism
     num_workers = get_worker_count(args.jobs, len(jobs))
@@ -756,10 +784,15 @@ Config file lookup order:
         if result.retried_dpi:
             log.info(
                 "%s -> %s (%d redactions, retried at %d DPI)",
-                result.input_path, result.output_path, result.redactions, result.retried_dpi,
+                result.input_path,
+                result.output_path,
+                result.redactions,
+                result.retried_dpi,
             )
         else:
-            log.info("%s -> %s (%d redactions)", result.input_path, result.output_path, result.redactions)
+            log.info(
+                "%s -> %s (%d redactions)", result.input_path, result.output_path, result.redactions
+            )
 
         # Track failures
         if result.error_code == EXIT_NO_MATCHES:

@@ -65,6 +65,9 @@ pytest tests/ --pdf=arxiv                       # PDFs containing "arxiv"
 pytest tests/ --limit=50      # First 50 test cases
 pytest tests/ --sample=50     # Random sample of 50
 
+# Language support
+pytest tests/ --lang=eng+kor  # Test with English + Korean OCR
+
 # Output control
 pytest tests/ --save-output   # Save redacted PDFs to tests/output/ (default)
 pytest tests/ --no-save-output # Don't save (for CI)

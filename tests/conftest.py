@@ -212,7 +212,11 @@ def load_test_cases(
             texts = extract_texts(entry)
 
             for i, text in enumerate(texts):
-                test_id = f"{category}/{test_id_base}/{i}" if len(texts) > 1 else f"{category}/{test_id_base}"
+                test_id = (
+                    f"{category}/{test_id_base}/{i}"
+                    if len(texts) > 1
+                    else f"{category}/{test_id_base}"
+                )
                 cases.append((pdf_path, text, test_id, test_type))
 
     # Apply sampling
@@ -310,6 +314,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="Number of parallel workers (default: half the CPU cores)",
     )
+    parser.addoption(
+        "--lang",
+        action="store",
+        default="eng",
+        help="Tesseract language(s) for OCR, e.g. 'eng', 'eng+kor' (default: eng)",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -343,7 +353,6 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     # Extract user_properties set by the test
     props = dict(report.user_properties)
     redactions = props.get("redactions")
-    leaked = props.get("leaked")
     test_id = props.get("test_id", report.nodeid)
 
     # If properties weren't set (test errored before setting them), skip

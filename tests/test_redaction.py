@@ -11,9 +11,7 @@ import os
 import tempfile
 from pathlib import Path
 
-import pytest
-
-from bleachpdf import _process_single_pdf, normalize
+from bleachpdf import Config, _process_single_pdf, normalize
 
 from .conftest import (
     OUTPUT_DIR,
@@ -26,6 +24,7 @@ def run_redaction_test(
     text: str,
     test_id: str,
     save_output: bool,
+    lang: str = "eng",
 ) -> dict:
     """
     Run a single redaction test case.
@@ -51,13 +50,15 @@ def run_redaction_test(
     os.environ["OMP_THREAD_LIMIT"] = "1"
 
     # Run bleachpdf
-    result = _process_single_pdf((
-        str(pdf_path),
-        str(output_path),
-        [peg_pattern],
-        300,  # dpi
-        True,  # verify
-    ))
+    config = Config(dpi=300, lang=lang, verify=True)
+    result = _process_single_pdf(
+        (
+            str(pdf_path),
+            str(output_path),
+            [peg_pattern],
+            config,
+        )
+    )
 
     # Clean up temp file if not saving
     if not save_output and output_path.exists():
@@ -82,8 +83,9 @@ def test_redaction(redaction_case, request):
     """
     pdf_path, text, test_id, test_type = redaction_case
     save_output = request.config.getoption("--save-output")
+    lang = request.config.getoption("--lang")
 
-    result = run_redaction_test(pdf_path, text, test_id, save_output)
+    result = run_redaction_test(pdf_path, text, test_id, save_output, lang=lang)
 
     # Store result data for aggregation in conftest hooks
     # This works with xdist because user_properties are serialized back to controller

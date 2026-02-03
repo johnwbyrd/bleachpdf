@@ -14,6 +14,16 @@ sudo apt install tesseract-ocr
 brew install tesseract
 ```
 
+For non-English documents, install additional language packs:
+
+```bash
+# Ubuntu/Debian (Korean, Japanese, Chinese Simplified)
+sudo apt install tesseract-ocr-kor tesseract-ocr-jpn tesseract-ocr-chi-sim
+
+# macOS
+brew install tesseract-lang
+```
+
 **2. Install bleachpdf:**
 
 ```bash
@@ -189,6 +199,7 @@ bleachpdf document.pdf -v                 # Show progress while running
 | `-o, --output` | Where to save the result (default: `output/`) |
 | `-c, --config` | Path to a config file |
 | `-d, --dpi` | Image quality — higher means sharper but slower (default: 300) |
+| `--lang` | Tesseract language(s) for OCR, e.g. `eng`, `eng+kor` (default: `eng`) |
 | `-j, --jobs` | How many files to process at once (default: half your CPU cores) |
 | `--relaxed` | Don't fail when no matches are found |
 | `--no-verify` | Skip the safety check that re-scans the output |
