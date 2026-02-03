@@ -42,5 +42,30 @@ Homepage = "https://github.com/johnwbyrd/bleachpdf"
 Repository = "https://github.com/johnwbyrd/bleachpdf"
 Issues = "https://github.com/johnwbyrd/bleachpdf/issues"
 
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8.0",
+]
+
 [project.scripts]
 bleachpdf = "bleachpdf:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "UP",     # pyupgrade
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+]
+
+[tool.ruff.format]
+quote-style = "double"

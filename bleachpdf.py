@@ -90,13 +90,15 @@ def ocr_page(img: Image.Image) -> list[WordInfo]:
     for i in range(len(data["text"])):
         text = data["text"][i].strip()
         if text:
-            words.append({
-                "text": text,
-                "left": data["left"][i],
-                "top": data["top"][i],
-                "width": max(1, data["width"][i]),
-                "height": max(1, data["height"][i]),
-            })
+            words.append(
+                {
+                    "text": text,
+                    "left": data["left"][i],
+                    "top": data["top"][i],
+                    "width": max(1, data["width"][i]),
+                    "height": max(1, data["height"][i]),
+                }
+            )
     return words
 
 
@@ -359,22 +361,26 @@ Config file lookup order:
         help="PDF file(s), directory, or glob pattern",
     )
     parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         metavar="OUTPUT",
         help="output file (single input) or directory (default: output/)",
     )
     parser.add_argument(
-        "-c", "--config",
+        "-c",
+        "--config",
         metavar="CONFIG",
         help="path to config file (default: pii.yaml)",
     )
     parser.add_argument(
-        "-q", "--quiet",
+        "-q",
+        "--quiet",
         action="store_true",
         help="suppress output",
     )
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         help="show matched patterns",
     )
@@ -423,7 +429,8 @@ Config file lookup order:
             log.error(
                 "Cannot output %d files to single file '%s'.\n"
                 "Use a directory (with trailing /) for multiple inputs.",
-                len(jobs), args.output,
+                len(jobs),
+                args.output,
             )
             sys.exit(1)
 
