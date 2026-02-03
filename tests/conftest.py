@@ -10,14 +10,9 @@ from __future__ import annotations
 import json
 import random
 import shutil
-import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
-
-if TYPE_CHECKING:
-    from collections.abc import Generator
 
 # =============================================================================
 # Constants
@@ -45,8 +40,41 @@ TEXT_FIELDS = {
     "absent": ["text"],
     "order": ["before", "after"],
     "table": ["cell", "up", "down", "left", "right", "top_heading", "left_heading"],
-    # Skip math - LaTeX won't match OCR output
 }
+
+# Default test types to run (skip absent, math, baseline)
+DEFAULT_TYPES = ["present", "order", "table"]
+
+
+# =============================================================================
+# Test Result Tracking
+# =============================================================================
+
+
+class TestResultTracker:
+    """Track test results with redaction details."""
+
+    def __init__(self):
+        self.passed = 0
+        self.failed = 0
+        self.threshold = 0.0
+        # Detailed redaction tracking
+        self.with_redactions = 0  # Tests that actually redacted something
+        self.zero_redactions = 0  # Tests with 0 redactions (suspicious)
+        self.zero_redaction_tests: list[str] = []  # Test IDs for investigation
+
+    @property
+    def total(self) -> int:
+        return self.passed + self.failed
+
+    @property
+    def pass_rate(self) -> float:
+        if self.total == 0:
+            return 0.0
+        return (self.passed / self.total) * 100
+
+# Global tracker instance
+_result_tracker = TestResultTracker()
 
 
 # =============================================================================
@@ -133,19 +161,22 @@ def extract_texts(entry: dict) -> list[str]:
 
 def load_test_cases(
     categories: list[str] | None = None,
+    types: list[str] | None = None,
     pdf_filter: str | None = None,
     limit: int | None = None,
     sample: int | None = None,
-) -> list[tuple[Path, str, str]]:
+) -> list[tuple[Path, str, str, str]]:
     """
     Load test cases from the dataset.
 
-    Returns list of (pdf_path, text, test_id) tuples.
+    Returns list of (pdf_path, text, test_id, test_type) tuples.
     """
     if categories is None:
         categories = CATEGORIES
+    if types is None:
+        types = DEFAULT_TYPES
 
-    cases: list[tuple[Path, str, str]] = []
+    cases: list[tuple[Path, str, str, str]] = []
 
     for category in categories:
         jsonl_path = BENCH_DATA_DIR / f"{category}.jsonl"
@@ -157,6 +188,11 @@ def load_test_cases(
         for entry in entries:
             pdf_name = entry.get("pdf", "")
             if not pdf_name:
+                continue
+
+            # Filter by test type
+            test_type = entry.get("type", "unknown")
+            if test_type not in types:
                 continue
 
             # Apply PDF filter
@@ -172,7 +208,7 @@ def load_test_cases(
 
             for i, text in enumerate(texts):
                 test_id = f"{category}/{test_id_base}/{i}" if len(texts) > 1 else f"{category}/{test_id_base}"
-                cases.append((pdf_path, text, test_id))
+                cases.append((pdf_path, text, test_id, test_type))
 
     # Apply sampling
     if sample and sample < len(cases):
@@ -205,6 +241,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Comma-separated list of categories to test (default: all)",
     )
     parser.addoption(
+        "--types",
+        action="store",
+        default=None,
+        help="Comma-separated list of test types (default: present,order,table)",
+    )
+    parser.addoption(
         "--sample",
         action="store",
         type=int,
@@ -230,6 +272,20 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         dest="save_output",
         help="Don't save redacted PDFs (for CI/CD)",
     )
+    parser.addoption(
+        "--pass-threshold",
+        action="store",
+        type=float,
+        default=0.0,
+        help="Minimum pass rate (0-100) required. Fail if below threshold. Default: 0 (disabled)",
+    )
+    parser.addoption(
+        "--jobs",
+        action="store",
+        type=int,
+        default=None,
+        help="Number of parallel workers (default: half the CPU count)",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -237,57 +293,47 @@ def pytest_configure(config: pytest.Config) -> None:
     check_tesseract()
     ensure_dataset()
 
-
-def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
-    """Dynamically parameterize tests based on CLI options."""
-    if "pdf_path" in metafunc.fixturenames:
-        # Parse CLI options
-        pdf_filter = metafunc.config.getoption("--pdf")
-        category_opt = metafunc.config.getoption("--category")
-        sample = metafunc.config.getoption("--sample")
-        limit = metafunc.config.getoption("--limit")
-
-        categories = None
-        if category_opt:
-            categories = [c.strip() for c in category_opt.split(",")]
-
-        # Load test cases
-        cases = load_test_cases(
-            categories=categories,
-            pdf_filter=pdf_filter,
-            limit=limit,
-            sample=sample,
-        )
-
-        if not cases:
-            pytest.skip("No test cases match the specified filters")
-
-        # Parameterize
-        metafunc.parametrize(
-            "pdf_path,text,test_id",
-            cases,
-            ids=[c[2] for c in cases],
-        )
+    # Store threshold for later use
+    _result_tracker.threshold = config.getoption("--pass-threshold")
 
 
-@pytest.fixture
-def config_file(tmp_path: Path, text: str) -> Generator[Path, None, None]:
-    """Generate a temporary pii.yaml config file for the test text."""
-    from bleachpdf import normalize
+def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ARG001
+    """Print summary and enforce pass threshold."""
+    tracker = _result_tracker
 
-    # Normalize the text (remove spaces, punctuation)
-    pattern = normalize(text)
+    # Print summary
+    print("\n" + "=" * 70)
+    print("REDACTION TEST SUMMARY")
+    print("=" * 70)
+    print(f"  Passed:  {tracker.passed}")
+    print(f"  Failed:  {tracker.failed}")
+    print(f"  Total:   {tracker.total}")
+    print(f"  Pass rate: {tracker.pass_rate:.1f}%")
+    print()
+    print("  Redaction breakdown:")
+    print(f"    With redactions:    {tracker.with_redactions}")
+    print(f"    Zero redactions:    {tracker.zero_redactions}  (suspicious - OCR may have failed)")
 
-    # Escape special regex characters
-    escaped = escape_peg_regex(pattern)
+    if tracker.zero_redaction_tests:
+        print()
+        print("  Zero-redaction tests (first 10):")
+        for test_id in tracker.zero_redaction_tests[:10]:
+            print(f"    - {test_id}")
+        if len(tracker.zero_redaction_tests) > 10:
+            print(f"    ... and {len(tracker.zero_redaction_tests) - 10} more")
 
-    # Create case-insensitive pattern
-    config_content = f'patterns:\n  - \'match = ~"(?i){escaped}"\'\n'
+    if tracker.threshold > 0:
+        print()
+        print(f"  Threshold: {tracker.threshold:.1f}%")
 
-    config_path = tmp_path / "pii.yaml"
-    config_path.write_text(config_content)
+        if tracker.pass_rate < tracker.threshold:
+            print(f"\n  THRESHOLD NOT MET: {tracker.pass_rate:.1f}% < {tracker.threshold:.1f}%")
+            # Force failure exit status
+            session.exitstatus = 1
+        else:
+            print(f"\n  THRESHOLD MET: {tracker.pass_rate:.1f}% >= {tracker.threshold:.1f}%")
 
-    yield config_path
+    print("=" * 70)
 
 
 def escape_peg_regex(s: str) -> str:
@@ -301,65 +347,3 @@ def escape_peg_regex(s: str) -> str:
         else:
             result.append(c)
     return "".join(result)
-
-
-@pytest.fixture
-def bleachpdf_path() -> Path:
-    """Return the path to the bleachpdf command."""
-    # Try to find it in PATH first (installed)
-    which = shutil.which("bleachpdf")
-    if which:
-        return Path(which)
-
-    # Fall back to running as module
-    return Path("bleachpdf")
-
-
-@pytest.fixture
-def save_output(request) -> bool:
-    """Return whether to save redacted PDFs for inspection."""
-    return request.config.getoption("--save-output")
-
-
-@pytest.fixture
-def run_bleachpdf(bleachpdf_path: Path, tmp_path: Path, config_file: Path, save_output: bool, test_id: str):
-    """Fixture that returns a function to run bleachpdf."""
-    output_path = tmp_path / "output.pdf"
-
-    def _run(pdf_path: Path) -> subprocess.CompletedProcess:
-        # Determine how to invoke bleachpdf
-        if bleachpdf_path.name == "bleachpdf" and not bleachpdf_path.is_absolute():
-            # Run as module
-            cmd = [
-                "python",
-                "-m",
-                "bleachpdf",
-                str(pdf_path),
-                "-o",
-                str(output_path),
-                "-c",
-                str(config_file),
-            ]
-        else:
-            cmd = [
-                str(bleachpdf_path),
-                str(pdf_path),
-                "-o",
-                str(output_path),
-                "-c",
-                str(config_file),
-            ]
-
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        # Save output for human inspection if requested
-        if save_output and output_path.exists():
-            # Create output directory structure from test_id
-            # test_id looks like "old_scans/50_262572" or "headers_footers/abc123/0"
-            saved_path = OUTPUT_DIR / f"{test_id}.pdf"
-            saved_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(output_path, saved_path)
-
-        return result
-
-    return _run
